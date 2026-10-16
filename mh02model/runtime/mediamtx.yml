@@ -1,0 +1,10 @@
+rtspAddress: :8554
+rtspTransports: [tcp]
+webrtcAddress: :8889
+webrtcAllowOrigins: ['*']
+
+paths:
+  front:
+    source: publisher
+  all_others:
+    source: publisher

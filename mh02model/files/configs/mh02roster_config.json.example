@@ -1,0 +1,14 @@
+{
+  "server": {
+    "ip": "192.0.2.10",
+    "port": 62000
+  },
+  "process": {
+    "interval_ms": 3000,
+    "max_retries": 3
+  },
+  "files": {
+    "json_output": "D:\\smartd\\script\\mh02model\\files\\configs\\mh02rosterdata.json",
+    "smartd_config": "D:\\smartd\\script\\mh02model\\files\\configs\\smartd.json"
+  }
+}

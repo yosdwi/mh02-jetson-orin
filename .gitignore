@@ -1,0 +1,42 @@
+# Runtime and credentials
+.env
+.env.*
+!.env.example
+secrets/
+**/secrets/
+*.pem
+*.key
+*.p12
+*.db
+*.sqlite
+*.sqlite3
+*.sqlite3-*
+**/recordings/
+**/datalog/
+**/snapshots/
+**/evidence/
+*.mp4
+*.ts
+*.parquet
+*.engine
+*.onnx
+*.etlt
+*.weights
+*.pt
+# Exclude deployed configs; templates are explicitly allowed
+mh02model/files/configs/*
+!mh02model/files/configs/*.example
+# Python and tooling
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+*.egg-info/
+# platform outputs
+*.dll
+*.exe
+*.wav
+.DS_Store

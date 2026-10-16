@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Vehicle Operations</title>
+  <link rel="stylesheet" href="/assets/style.css">
+  <script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.17/dist/hls.min.js"></script>
+</head>
+<body>
+  <main class="shell">
+    <header class="topbar">
+      <div><p class="eyebrow">Operations</p><h1>Vehicle view</h1></div>
+      <div class="device-status"><span class="status-dot"></span><span id="service-status">Connecting</span></div>
+    </header>
+
+    <section class="health-panel panel">
+      <div class="health-heading"><div><p class="eyebrow">Daily coverage</p><h2 id="health-date">Today</h2></div><span id="health-summary" class="muted">Checking</span></div>
+      <div id="health-strip" class="health-strip"></div>
+      <div class="health-scale"><span>00</span><span>04</span><span>08</span><span>12</span><span>16</span><span>20</span><span>23</span></div>
+    </section>
+
+    <section class="hero-grid">
+      <article class="panel live-panel">
+        <div class="panel-heading"><div><p class="eyebrow">Live</p><h2>Camera</h2></div><span class="live-pill">LIVE</span></div>
+        <div class="video-frame"><video id="live-player" controls autoplay muted playsinline></video><div id="live-message" class="video-message">Waiting for camera stream</div></div>
+      </article>
+      <aside class="panel telemetry-panel">
+        <div class="panel-heading"><div><p class="eyebrow">Latest</p><h2>Telemetry</h2></div><span id="aggregate-age" class="muted">—</span></div>
+        <div class="metric-grid">
+          <div class="metric"><span>Device</span><strong id="device-id">—</strong></div>
+          <div class="metric"><span>Unit</span><strong id="unit-no">—</strong></div>
+          <div class="metric"><span>GPS</span><strong id="gps-position">No fix</strong></div>
+          <div class="metric"><span>Speed</span><strong id="gps-speed">—</strong></div>
+          <div class="metric"><span>Eyes</span><strong id="fatigue-eyes">Normal</strong></div>
+          <div class="metric"><span>Yawning</span><strong id="fatigue-yawn">Normal</strong></div>
+        </div>
+        <div class="telemetry-footer"><span>Local time</span><span id="telemetry-time">—</span></div>
+      </aside>
+    </section>
+
+    <section class="archive-section panel">
+      <div class="section-heading"><div><p class="eyebrow">Recordings</p><h2>Video library</h2></div><div class="archive-date"><label for="archive-date">Date</label><input id="archive-date" type="date"></div></div>
+      <div id="recording-grid" class="recording-grid"><div class="empty-state">Select an hour with recordings</div></div>
+      <div id="archive-viewer" class="archive-viewer" hidden>
+        <div class="archive-player"><video id="archive-player" controls preload="metadata"></video><div id="archive-message" class="video-message">Select a recording</div><div id="archive-overlay" class="telemetry-overlay" hidden><span class="telemetry-line"></span><span class="telemetry-line"></span><span class="telemetry-line"></span></div></div>
+        <div class="archive-footer"><span id="archive-selection" class="muted">No recording selected</span><div class="archive-actions"><a id="download-recording" class="button secondary" hidden>Download MP4 + VTT</a><a id="download-datalog" class="button primary" hidden>Download datalog</a></div></div>
+      </div>
+    </section>
+
+    <section class="alerts-section">
+      <div class="section-heading"><div><p class="eyebrow">Alerts</p><h2>Fatigue events</h2></div><span id="alert-count" class="muted">0 events</span></div>
+      <div id="alert-list" class="alert-list"><div class="empty-state">No fatigue alerts yet.</div></div>
+    </section>
+
+    <section class="datalog-section">
+      <div class="section-heading"><div><p class="eyebrow">Datalogger</p><h2>Hourly files</h2></div><span id="datalog-count" class="muted">0 files</span></div>
+      <div id="datalog-list" class="datalog-list"><div class="empty-state">No completed hourly datalog yet.</div></div>
+    </section>
+  </main>
+  <script src="/assets/app.js"></script>
+</body>
+</html>
