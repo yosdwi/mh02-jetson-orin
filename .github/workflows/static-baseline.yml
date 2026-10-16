@@ -1,0 +1,31 @@
+name: Static baseline (non-hardware)
+on:
+  push:
+  pull_request:
+jobs:
+  static:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+      - name: Python syntax check only
+        run: python -m compileall -q mh02model/apps/mh02 mh02model/runtime/mh02_runtime
+      - name: Guard against accidental camera credentials in published source
+        run: |
+          python - <<'PY_CHECK'
+          from pathlib import Path
+          import re, sys
+          bad=[]
+          for p in Path('mh02model').rglob('*'):
+              if p.is_file() and p.suffix in {'.py','.json','.conf','.yml','.yaml','.md','.js','.service','.example'}:
+                  text=p.read_text(encoding='utf-8',errors='replace')
+                  for m in re.finditer(r'(?i)rtsp://([^/\s]+)@',text):
+                      if 'CHANGE_ME' not in m.group(1) and 'example' not in m.group(1).lower(): bad.append(str(p))
+          if bad:
+              print('Potential embedded RTSP credentials:', sorted(set(bad)));sys.exit(1)
+          print('Basic RTSP credential scan passed (not a complete secrets scan).')
+          PY_CHECK

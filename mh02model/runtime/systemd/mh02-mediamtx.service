@@ -1,0 +1,14 @@
+[Unit]
+Description=MH02 MediaMTX WebRTC gateway
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=smartd
+WorkingDirectory=/home/smartd/mh02_runtime
+ExecStart=/usr/local/bin/mediamtx /home/smartd/mh02_runtime/mediamtx.yml
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

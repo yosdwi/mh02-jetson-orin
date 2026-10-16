@@ -1,0 +1,80 @@
+@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap');
+
+:root { color-scheme: dark; --canvas: #101412; --panel: #171d1b; --panel-2: #1e2723; --border: rgba(210, 231, 218, .10); --ink: #edf4ef; --muted: #91a198; --accent: #b8e6b0; --warning: #efb366; --danger: #df8079; --future: #303a35; }
+* { box-sizing: border-box; }
+body { margin: 0; min-width: 320px; background: var(--canvas); color: var(--ink); font-family: 'DM Sans', 'Avenir Next', ui-sans-serif, system-ui, sans-serif; }
+.shell { width: min(1440px, calc(100% - 48px)); margin: 0 auto; padding: 34px 0 64px; }
+.topbar, .panel-heading, .section-heading, .health-heading, .telemetry-footer, .archive-footer { display: flex; align-items: center; justify-content: space-between; gap: 20px; }
+.topbar { margin-bottom: 22px; }
+.eyebrow { margin: 0 0 7px; color: var(--muted); font: 500 11px/1 'IBM Plex Mono', monospace; letter-spacing: .11em; text-transform: uppercase; }
+h1, h2 { margin: 0; letter-spacing: -.035em; }
+h1 { font-size: clamp(28px, 4vw, 44px); font-weight: 600; }
+h2 { font-size: 18px; font-weight: 600; }
+.device-status, .live-pill { display: inline-flex; align-items: center; gap: 8px; border: 1px solid var(--border); border-radius: 999px; color: var(--muted); font-size: 12px; padding: 8px 12px; }
+.status-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 4px rgba(184, 230, 176, .10); }
+.panel { background: var(--panel); border: 1px solid var(--border); border-radius: 18px; box-shadow: 0 18px 50px rgba(0, 0, 0, .13); }
+.health-panel { padding: 20px; margin-bottom: 18px; }
+.health-heading { margin-bottom: 19px; }
+.health-strip { display: grid; grid-template-columns: repeat(24, minmax(0, 1fr)); gap: 4px; height: 16px; }
+.health-hour { min-width: 0; padding: 0; border: 0; border-radius: 3px; background: var(--future); cursor: pointer; transition: transform .15s ease, filter .15s ease; }
+.health-hour:hover, .health-hour.selected { filter: brightness(1.35); transform: scaleY(1.35); }
+.health-hour.green { background: var(--accent); }
+.health-hour.orange { background: var(--warning); }
+.health-hour.red { background: var(--danger); }
+.health-hour.future { background: var(--future); }
+.health-scale { display: flex; justify-content: space-between; margin-top: 8px; color: var(--muted); font: 10px 'IBM Plex Mono', monospace; }
+.hero-grid { display: grid; grid-template-columns: minmax(0, 1.5fr) minmax(300px, .7fr); gap: 18px; }
+.live-panel, .telemetry-panel, .archive-section { padding: 20px; }
+.panel-heading { margin-bottom: 18px; }
+.live-pill { color: var(--accent); border-color: rgba(184, 230, 176, .22); font: 500 10px/1 'IBM Plex Mono', monospace; letter-spacing: .1em; }
+.video-frame { position: relative; overflow: hidden; min-height: 420px; border-radius: 12px; background: #080a09; }
+video { display: block; width: 100%; height: 100%; object-fit: contain; }
+.video-frame video { position: absolute; inset: 0; }
+.video-message { position: absolute; inset: 50% auto auto 50%; color: var(--muted); font-size: 13px; transform: translate(-50%, -50%); white-space: nowrap; }
+.metric-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.metric { min-height: 92px; padding: 15px; border: 1px solid var(--border); border-radius: 12px; background: var(--panel-2); }
+.metric span, .telemetry-footer, .muted { color: var(--muted); font-size: 12px; }
+.metric strong { display: block; margin-top: 17px; overflow: hidden; font-size: 16px; font-weight: 500; text-overflow: ellipsis; white-space: nowrap; }
+.telemetry-footer { margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--border); font-family: 'IBM Plex Mono', monospace; font-size: 11px; }
+.archive-section { margin-top: 18px; }
+.archive-date { display: flex; align-items: center; gap: 9px; color: var(--muted); font: 11px 'IBM Plex Mono', monospace; }
+input[type='date'] { padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--panel-2); color: var(--ink); font: 12px 'IBM Plex Mono', monospace; }
+.archive-player { position: relative; overflow: hidden; min-height: 400px; margin-top: 4px; border-radius: 12px; background: #080a09; }
+.archive-player video { min-height: 400px; }
+.recording-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 10px; margin-top: 4px; }
+.recording-card { min-height: 108px; padding: 15px; border: 1px solid var(--border); border-radius: 12px; background: var(--panel-2); color: var(--ink); text-align: left; cursor: pointer; transition: background .15s ease, transform .15s ease; }
+.recording-card:hover, .recording-card.selected { background: #27342d; transform: translateY(-2px); }
+.recording-card strong, .recording-card span, .recording-card small { display: block; }
+.recording-card strong { font-size: 15px; font-weight: 500; }
+.recording-card span, .recording-card small { margin-top: 9px; color: var(--muted); font: 11px 'IBM Plex Mono', monospace; }
+.recording-card small { margin-top: 15px; color: var(--accent); }
+.archive-viewer { margin-top: 18px; }
+.telemetry-overlay { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: stretch; justify-content: space-between; padding: 18px; background: linear-gradient(to bottom, rgba(0, 0, 0, .48), transparent 24%, transparent 70%, rgba(0, 0, 0, .48)); color: #fff; font: 600 clamp(11px, 1.2vw, 18px)/1.35 'IBM Plex Mono', monospace; pointer-events: none; text-shadow: 1px 1px 2px #000, -1px -1px 1px rgba(0, 0, 0, .55); white-space: pre-line; }
+.archive-footer { margin-top: 18px; padding-top: 15px; border-top: 1px solid var(--border); }
+.archive-actions { display: flex; gap: 8px; }
+.button { display: inline-flex; align-items: center; justify-content: center; padding: 9px 12px; border-radius: 8px; font-size: 12px; text-decoration: none; cursor: pointer; }
+.button.primary { background: var(--accent); color: #162016; }
+.button.secondary { border: 1px solid var(--border); background: var(--panel-2); color: var(--ink); }
+.alerts-section { margin-top: 42px; }
+.alert-list { display: grid; gap: 10px; }
+.alert-card { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 18px; padding: 15px 16px; border: 1px solid var(--border); border-radius: 12px; background: var(--panel); }
+.alert-card strong, .alert-card span, .alert-card small { display: block; }
+.alert-card strong { font-size: 14px; font-weight: 500; }
+.alert-card span, .alert-card small { margin-top: 5px; color: var(--muted); font: 11px 'IBM Plex Mono', monospace; }
+.alert-card small { color: var(--ink); opacity: .72; }
+.alert-meta { display: flex; align-items: center; gap: 14px; }
+.alert-meta > span { margin: 0; }
+.alert-state { padding: 6px 8px; border-radius: 6px; background: var(--panel-2); }
+.alert-state.active { color: var(--warning); }
+.alert-state.post { color: var(--accent); }
+.alert-state.complete { color: var(--muted); }
+.datalog-section { margin-top: 42px; }
+.datalog-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 10px; }
+.datalog-card { display: grid; grid-template-columns: 1fr auto; gap: 5px 12px; padding: 15px; border: 1px solid var(--border); border-radius: 12px; background: var(--panel); }
+.datalog-card strong { font-size: 13px; font-weight: 500; }
+.datalog-card span { color: var(--muted); font: 11px 'IBM Plex Mono', monospace; }
+.datalog-card .button { grid-row: span 2; align-self: center; }
+.empty-state { padding: 34px; border: 1px dashed var(--border); border-radius: 12px; color: var(--muted); text-align: center; }
+.alert { color: var(--warning) !important; }
+@media (max-width: 900px) { .hero-grid { grid-template-columns: 1fr; } .video-frame, .archive-player, .archive-player video { min-height: 300px; } }
+@media (max-width: 560px) { .shell { width: min(100% - 28px, 1440px); padding-top: 22px; } .topbar, .archive-footer { align-items: flex-start; flex-direction: column; } .alert-card { display: flex; align-items: flex-start; flex-direction: column; } .alert-meta { flex-wrap: wrap; } .video-frame, .archive-player, .archive-player video { min-height: 220px; } .recording-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; } .health-strip { gap: 2px; } }

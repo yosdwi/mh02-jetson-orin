@@ -1,0 +1,15 @@
+[Unit]
+Description=MH02 GPS service
+After=network.target
+
+[Service]
+User=smartd
+SupplementaryGroups=dialout
+WorkingDirectory=/home/smartd/mh02_runtime
+Environment=PYTHONPATH=/home/smartd/mh02_runtime
+ExecStart=/home/smartd/mh02_runtime/.venv/bin/python -m mh02_runtime.gps_service
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

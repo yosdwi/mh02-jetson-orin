@@ -1,0 +1,14 @@
+[Unit]
+Description=MH02 aggregate service
+After=mh02-gps.service
+
+[Service]
+User=smartd
+WorkingDirectory=/home/smartd/mh02_runtime
+Environment=PYTHONPATH=/home/smartd/mh02_runtime
+ExecStart=/home/smartd/mh02_runtime/.venv/bin/python -m mh02_runtime.aggregate_service
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
