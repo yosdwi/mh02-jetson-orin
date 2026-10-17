@@ -7,11 +7,10 @@ import os
 import signal
 import tempfile
 import threading
-import time
 from datetime import datetime
 from pathlib import Path
 from threading import Event
-from typing import Optional
+from typing import List, Optional
 
 import gi
 
@@ -20,55 +19,25 @@ gi.require_version("GLib", "2.0")
 from gi.repository import GLib, Gst
 
 from .models import AggregateSample
+from .evidence import render_vtt
 from .store import RuntimeStore, utc_now
 
 
 LOGGER = logging.getLogger("mh02.vlog")
 
 
-def nmea_coordinate(value: Optional[float], latitude: bool) -> str:
-    if value is None:
-        return "--"
-    absolute = abs(float(value))
-    degrees = int(absolute)
-    minutes = f"{(absolute - degrees) * 60:.4f}".zfill(7)
-    degree_text = str(degrees).zfill(2 if latitude else 3)
-    positive = "N" if latitude else "E"
-    negative = "S" if latitude else "W"
-    return f"{degree_text}{minutes} {negative if value < 0 else positive}"
-
-
-def overlay_lines(sample: AggregateSample):
-    gps = sample.gps if sample.gps and sample.gps.valid else None
-    speed = "---" if gps is None or gps.speed_kph is None else str(round(gps.speed_kph)).zfill(3)
-    payload = sample.redis_payload
-    acceleration = next(
-        (payload.get(key) for key in ("acceleration", "acc", "ACC", "acc_status") if payload.get(key) is not None),
-        None,
-    )
-    if isinstance(acceleration, bool):
-        acceleration_text = "ON" if acceleration else "OFF"
-    elif acceleration is None:
-        acceleration_text = "ON" if gps is not None else "--"
-    else:
-        acceleration_text = str(acceleration).upper()
-    channel = payload.get("channel") or payload.get("channel_no") or "CH1"
-    channel_text = str(channel).upper()
-    if not channel_text.startswith("CH"):
-        channel_text = f"CH{channel_text}"
-    local_timestamp = sample.timestamp_utc.astimezone().strftime("%d-%m-%Y %H:%M:%S")
-    return (
-        f"{nmea_coordinate(gps.latitude if gps else None, True)}, {nmea_coordinate(gps.longitude if gps else None, False)}, {speed}KM/H ACC:{acceleration_text}",
-        f"ID: {sample.device_id or '--'} Name: {sample.unit_no or '--'}",
-        f"{local_timestamp} {sample.unit_no or '--'} {channel_text}",
-    )
-
-
-def timestamp(seconds: float) -> str:
-    hours = int(seconds // 3600)
-    minutes = int((seconds % 3600) // 60)
-    remaining = seconds % 60
-    return f"{hours:02d}:{minutes:02d}:{remaining:06.3f}"
+def has_mp4_index(path: Path) -> bool:
+    try:
+        size = path.stat().st_size
+        with path.open("rb") as handle:
+            if b"moov" in handle.read(min(size, 1024 * 1024)):
+                return True
+            if size > 1024 * 1024:
+                handle.seek(-1024 * 1024, 2)
+                return b"moov" in handle.read(1024 * 1024)
+    except OSError:
+        return False
+    return False
 
 
 class SubtitleWriter:
@@ -79,27 +48,36 @@ class SubtitleWriter:
         self.stop = Event()
         self.lock = threading.Lock()
         self.sequence = 0
-        self.start_ns: Optional[int] = None
-        self.end_ns: Optional[int] = None
         self.handle = None
         self.segment_path: Optional[Path] = None
         self.segment_start_utc: Optional[datetime] = None
+        self.segment_start_pts_ns: Optional[int] = None
+        self.samples: List[AggregateSample] = []
         self.thread = threading.Thread(target=self._run, name="mh02-vtt", daemon=True)
 
     def start(self) -> None:
         self.thread.start()
 
-    def open(self, filename: str) -> None:
+    def open(self, filename: str, segment_start_pts_ns: Optional[int] = None) -> None:
         with self.lock:
+            if self.handle is not None:
+                ended_at = utc_now()
+                duration = max(0.0, (ended_at - self.segment_start_utc).total_seconds()) if self.segment_start_utc else None
+                rendered = render_vtt(self.samples, self.segment_start_utc or ended_at, self.segment_start_pts_ns, duration)
+                self.handle.seek(0)
+                self.handle.truncate()
+                self.handle.write(rendered)
+                self.handle.flush()
+                self._write_metadata(False, ended_at, duration)
             self._close_locked()
             sidecar = Path(filename).with_suffix(".vtt")
             self.handle = sidecar.open("w", encoding="utf-8")
             self.handle.write("WEBVTT\n\n")
             self.handle.flush()
-            self.start_ns = time.monotonic_ns()
-            self.end_ns = None
             self.segment_path = Path(filename)
             self.segment_start_utc = utc_now()
+            self.segment_start_pts_ns = segment_start_pts_ns
+            self.samples = []
             self._write_metadata(False, None)
             LOGGER.info("Opened telemetry track %s", sidecar)
 
@@ -107,11 +85,17 @@ class SubtitleWriter:
         with self.lock:
             if self.handle is None:
                 return
-            self.end_ns = time.monotonic_ns()
-            self._write_metadata(complete, utc_now())
+            ended_at = utc_now()
+            duration = max(0.0, (ended_at - self.segment_start_utc).total_seconds()) if self.segment_start_utc else None
+            rendered = render_vtt(self.samples, self.segment_start_utc or ended_at, self.segment_start_pts_ns, duration)
+            self.handle.seek(0)
+            self.handle.truncate()
+            self.handle.write(rendered)
+            self.handle.flush()
+            self._write_metadata(complete, ended_at, duration)
             self._close_locked()
 
-    def _write_metadata(self, complete: bool, ended_at: Optional[datetime]) -> None:
+    def _write_metadata(self, complete: bool, ended_at: Optional[datetime], duration: Optional[float] = None) -> None:
         if self.segment_path is None or self.segment_start_utc is None:
             return
         payload = {
@@ -119,10 +103,12 @@ class SubtitleWriter:
             "filename": self.segment_path.name,
             "started_at_utc": self.segment_start_utc.isoformat(),
             "ended_at_utc": ended_at.isoformat() if ended_at else None,
-            "duration_seconds": (self.end_ns - self.start_ns) / 1_000_000_000
-            if ended_at and self.end_ns and self.start_ns
-            else None,
+            "duration_seconds": duration,
             "complete": complete,
+            "state": "VERIFIED" if complete else "FINALIZING",
+            "clock_source": "media_pts" if self.segment_start_pts_ns is not None else "utc_observed",
+            "segment_start_pts_ns": self.segment_start_pts_ns,
+            "timestamp_uncertainty_ms": 0 if self.segment_start_pts_ns is not None else 1000,
         }
         metadata_path = self.segment_path.with_suffix(".json")
         fd, temporary = tempfile.mkstemp(prefix="recording-", suffix=".json.tmp", dir=metadata_path.parent)
@@ -139,29 +125,37 @@ class SubtitleWriter:
             self.handle.flush()
             self.handle.close()
             self.handle = None
-        self.start_ns = None
-        self.end_ns = None
         self.segment_path = None
         self.segment_start_utc = None
+        self.segment_start_pts_ns = None
+        self.samples = []
 
     def _write(self, sample: AggregateSample) -> None:
         with self.lock:
-            if self.handle is None or self.start_ns is None:
+            if self.handle is None:
                 return
-            if sample.monotonic_ns < self.start_ns:
-                return
-            if self.end_ns is not None and sample.monotonic_ns > self.end_ns:
-                return
-            begin = (sample.monotonic_ns - self.start_ns) / 1_000_000_000
-            end = begin + 1.2
-            positions = (5, 12, 88)
-            for index, (line, position) in enumerate(zip(overlay_lines(sample), positions)):
-                self.handle.write(f"{sample.sequence}-{index}\n")
-                self.handle.write(
-                    f"{timestamp(begin)} --> {timestamp(end)} line:{position}% position:2% size:96% align:start\n"
-                )
-                self.handle.write(f"{line}\n\n")
-            self.handle.flush()
+            self.samples.append(sample)
+
+    def finalize(self, filename: str) -> None:
+        path = Path(filename)
+        metadata_path = path.with_suffix(".json")
+        if not path.exists() or not metadata_path.exists() or not has_mp4_index(path):
+            return
+        try:
+            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return
+        metadata["complete"] = True
+        metadata["state"] = "VERIFIED"
+        metadata["verified_at_utc"] = utc_now().isoformat()
+        fd, temporary = tempfile.mkstemp(prefix="recording-", suffix=".json.tmp", dir=metadata_path.parent)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                json.dump(metadata, handle, separators=(",", ":"))
+            os.replace(temporary, metadata_path)
+        finally:
+            if os.path.exists(temporary):
+                os.unlink(temporary)
 
     def _run(self) -> None:
         while not self.stop.wait(0.25):
@@ -202,6 +196,16 @@ def location(message: Gst.Message) -> Optional[str]:
     return str(value) if value else None
 
 
+def media_pts_ns(message: Gst.Message) -> Optional[int]:
+    structure = message.get_structure()
+    if structure is None:
+        return None
+    value = structure.get_value("running-time")
+    if isinstance(value, int) and value >= 0:
+        return value
+    return None
+
+
 def run(args: argparse.Namespace, stop: Event) -> None:
     args.record_dir.mkdir(parents=True, exist_ok=True)
     args.hls_dir.mkdir(parents=True, exist_ok=True)
@@ -234,8 +238,13 @@ def run(args: argparse.Namespace, stop: Event) -> None:
             name = message.get_structure().get_name() if message.get_structure() else ""
             path = location(message)
             if name == "splitmuxsink-fragment-opened" and path:
-                subtitles.close()
-                subtitles.open(path)
+                subtitles.close(False)
+                subtitles.open(path, media_pts_ns(message))
+            elif name == "splitmuxsink-fragment-closed" and path:
+                if subtitles.segment_path is not None and Path(path) == subtitles.segment_path:
+                    subtitles.close(True)
+                else:
+                    subtitles.finalize(path)
 
     bus.connect("message", on_message)
     subtitles.start()

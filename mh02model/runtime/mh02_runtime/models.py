@@ -15,6 +15,8 @@ JsonValue = Union[
     List[Any],
     Dict[str, Any],
 ]
+GpsStatus = Literal["FIX", "NO_FIX", "STALE", "INVALID"]
+FatigueStatus = Literal["fresh", "stale", "unknown"]
 
 
 class GpsSnapshot(BaseModel):
@@ -31,6 +33,25 @@ class GpsSnapshot(BaseModel):
     valid: bool = False
     source: str = "quectel-ec25-nmea"
     sentence: str = ""
+    fix_observed_at_utc: Optional[datetime] = None
+    valid_until_utc: Optional[datetime] = None
+    status: GpsStatus = "FIX"
+    boot_id: str = "legacy"
+
+    def is_fresh(self, as_of: datetime, max_age_seconds: float) -> bool:
+        observed_at = self.fix_observed_at_utc or self.timestamp_utc
+        age_seconds = (as_of - observed_at).total_seconds()
+        if age_seconds < 0 or age_seconds > max_age_seconds:
+            return False
+        if self.valid_until_utc is not None and as_of > self.valid_until_utc:
+            return False
+        return self.valid and self.fix_quality > 0 and self.status not in ("STALE", "INVALID", "NO_FIX")
+
+    def as_of(self, observed_at: datetime, max_age_seconds: float) -> "GpsSnapshot":
+        if self.is_fresh(observed_at, max_age_seconds):
+            return self
+        status = "STALE" if self.valid and self.fix_quality > 0 else "NO_FIX"
+        return self.model_copy(update={"valid": False, "status": status})
 
 
 class FatigueState(BaseModel):
@@ -44,6 +65,19 @@ class FatigueState(BaseModel):
     ear: Optional[float] = None
     mar: Optional[float] = None
     source: str = "mh02model-mediapipe-cpu-compat"
+    camera_id: str = "cabin"
+    frame_id: Optional[str] = None
+    media_pts_ns: Optional[int] = Field(default=None, ge=0)
+    source_status: FatigueStatus = "fresh"
+    boot_id: str = "legacy"
+
+    def is_fresh(self, as_of: datetime, max_age_seconds: float) -> bool:
+        age_seconds = (as_of - self.timestamp_utc).total_seconds()
+        return (
+            0 <= age_seconds <= max_age_seconds
+            and self.source_status == "fresh"
+            and self.camera_id == "cabin"
+        )
 
 
 class AggregateSample(BaseModel):
@@ -57,6 +91,9 @@ class AggregateSample(BaseModel):
     gps: Optional[GpsSnapshot] = None
     redis_payload: Dict[str, JsonValue] = Field(default_factory=dict)
     fatigue: Optional[FatigueState] = None
+    boot_id: str = "legacy"
+    media_pts_ns: Optional[int] = Field(default=None, ge=0)
+    utc_uncertainty_ms: Optional[float] = Field(default=None, ge=0)
 
 
 class Recording(BaseModel):
@@ -99,3 +136,6 @@ class AlertEvent(BaseModel):
     datalog_filenames: Tuple[str, ...] = ()
     clip_filename: Optional[str] = None
     clip_subtitle_filename: Optional[str] = None
+    camera_id: str = "cabin"
+    source_status: FatigueStatus = "fresh"
+    boot_id: str = "legacy"

@@ -67,12 +67,15 @@ class RuntimeStore:
                 "(SELECT id FROM gps_snapshots ORDER BY id DESC LIMIT 600)",
             )
 
-    def latest_gps(self) -> Optional[GpsSnapshot]:
+    def latest_gps(self, max_age_seconds: float = 5.0, as_of: Optional[datetime] = None) -> Optional[GpsSnapshot]:
         with self._connect() as connection:
             row = connection.execute(
                 "SELECT payload_json FROM gps_snapshots ORDER BY id DESC LIMIT 1",
             ).fetchone()
-        return None if row is None else GpsSnapshot.model_validate_json(row["payload_json"])
+        if row is None:
+            return None
+        snapshot = GpsSnapshot.model_validate_json(row["payload_json"])
+        return snapshot.as_of(as_of or utc_now(), max_age_seconds)
 
     def save_fatigue(self, state: FatigueState) -> None:
         with self._connect() as connection:
@@ -85,12 +88,15 @@ class RuntimeStore:
                 "(SELECT id FROM fatigue_snapshots ORDER BY id DESC LIMIT 600)",
             )
 
-    def latest_fatigue(self) -> Optional[FatigueState]:
+    def latest_fatigue(self, max_age_seconds: float = 2.0, as_of: Optional[datetime] = None) -> Optional[FatigueState]:
         with self._connect() as connection:
             row = connection.execute(
                 "SELECT payload_json FROM fatigue_snapshots ORDER BY id DESC LIMIT 1",
             ).fetchone()
-        return None if row is None else FatigueState.model_validate_json(row["payload_json"])
+        if row is None:
+            return None
+        state = FatigueState.model_validate_json(row["payload_json"])
+        return state if state.is_fresh(as_of or utc_now(), max_age_seconds) else None
 
     def next_sequence(self) -> int:
         with self._connect() as connection:

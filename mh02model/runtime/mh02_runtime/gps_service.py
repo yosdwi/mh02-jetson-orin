@@ -31,40 +31,95 @@ class NmeaState:
     fix_quality: int = 0
     satellites: int = 0
     valid: bool = False
+    fix_observed_at_utc: Optional[datetime] = None
 
 
 def coordinate(raw: str, hemisphere: str) -> Optional[float]:
-    if not raw or not hemisphere:
+    if not raw or hemisphere not in ("N", "S", "E", "W"):
         return None
-    value = float(raw)
+    try:
+        value = float(raw)
+    except ValueError:
+        return None
     degrees = int(value // 100)
     minutes = value - (degrees * 100)
+    maximum_degrees = 90 if hemisphere in ("N", "S") else 180
+    if minutes >= 60 or degrees > maximum_degrees or (degrees == maximum_degrees and minutes > 0):
+        return None
     result = degrees + (minutes / 60)
     return -result if hemisphere in ("S", "W") else result
 
 
-def parse_nmea(sentence: str, state: NmeaState) -> Optional[NmeaState]:
-    fields = sentence.strip().split(",")
+def has_valid_checksum(sentence: str) -> bool:
+    payload, separator, checksum = sentence.strip().partition("*")
+    if not separator or len(checksum) < 2:
+        return False
+    try:
+        expected = int(checksum[:2], 16)
+    except ValueError:
+        return False
+    actual = 0
+    checksum_payload = payload[1:] if payload.startswith("$") else payload
+    for character in checksum_payload:
+        actual ^= ord(character)
+    return actual == expected
+
+
+def nmea_fix_time(time_text: str, date_text: str, received_at: datetime) -> datetime:
+    if not time_text or not date_text:
+        return received_at
+    try:
+        parsed = datetime.strptime(f"{date_text}{time_text}", "%d%m%y%H%M%S.%f")
+    except ValueError:
+        try:
+            parsed = datetime.strptime(f"{date_text}{time_text}", "%d%m%y%H%M%S")
+        except ValueError:
+            return received_at
+    return parsed.replace(tzinfo=timezone.utc)
+
+
+def parse_nmea(sentence: str, state: NmeaState, received_at: Optional[datetime] = None) -> Optional[NmeaState]:
+    if not has_valid_checksum(sentence):
+        return None
+    payload = sentence.strip().partition("*")[0]
+    fields = payload.split(",")
     if not fields or not fields[0].startswith("$"):
         return None
     message_type = fields[0][-3:]
-    if message_type == "RMC" and len(fields) >= 9:
+    received_time = received_at or datetime.now(timezone.utc)
+    if message_type == "RMC" and len(fields) >= 10:
+        try:
+            speed_kph = float(fields[7] or 0) * 1.852
+        except ValueError:
+            return None
+        latitude = coordinate(fields[3], fields[4])
+        longitude = coordinate(fields[5], fields[6])
         return replace(
             state,
-            latitude=coordinate(fields[3], fields[4]),
-            longitude=coordinate(fields[5], fields[6]),
-            speed_kph=float(fields[7] or 0) * 1.852,
-            valid=fields[2] == "A",
+            latitude=latitude,
+            longitude=longitude,
+            speed_kph=speed_kph,
+            valid=fields[2] == "A" and latitude is not None and longitude is not None,
+            fix_observed_at_utc=nmea_fix_time(fields[1], fields[9], received_time),
         )
     if message_type == "GGA" and len(fields) >= 10:
+        try:
+            fix_quality = int(fields[6] or 0)
+            satellites = int(fields[7] or 0)
+            altitude_m = float(fields[9] or 0)
+        except ValueError:
+            return None
+        latitude = coordinate(fields[2], fields[3])
+        longitude = coordinate(fields[4], fields[5])
         return replace(
             state,
-            latitude=coordinate(fields[2], fields[3]),
-            longitude=coordinate(fields[4], fields[5]),
-            fix_quality=int(fields[6] or 0),
-            satellites=int(fields[7] or 0),
-            altitude_m=float(fields[9] or 0),
-            valid=int(fields[6] or 0) > 0,
+            latitude=latitude,
+            longitude=longitude,
+            fix_quality=fix_quality,
+            satellites=satellites,
+            altitude_m=altitude_m,
+            valid=fix_quality > 0 and latitude is not None and longitude is not None,
+            fix_observed_at_utc=received_time,
         )
     return None
 
@@ -109,12 +164,13 @@ class QuectelGnss:
                 if not raw_line:
                     continue
                 sentence = raw_line.decode("ascii", errors="ignore").strip()
-                parsed = parse_nmea(sentence, state)
+                received_at = utc_now()
+                parsed = parse_nmea(sentence, state, received_at)
                 if parsed is None:
                     continue
                 state = parsed
                 yield GpsSnapshot(
-                    timestamp_utc=utc_now(),
+                    timestamp_utc=received_at,
                     monotonic_ns=time.monotonic_ns(),
                     latitude=state.latitude,
                     longitude=state.longitude,
@@ -124,6 +180,8 @@ class QuectelGnss:
                     satellites=state.satellites,
                     valid=state.valid,
                     sentence=sentence,
+                    fix_observed_at_utc=state.fix_observed_at_utc or received_at,
+                    status="FIX" if state.valid else "NO_FIX",
                 )
 
 
