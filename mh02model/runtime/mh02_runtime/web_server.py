@@ -7,7 +7,7 @@ import tempfile
 import zipfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Dict, Iterator, List, Optional
+from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 import uvicorn
 from fastapi import FastAPI, HTTPException, Request
@@ -18,6 +18,8 @@ from starlette.background import BackgroundTask
 from .models import AlertEvent, DatalogFile, Recording
 from .configuration import ConfigMutation, ConfigRestartRequest, ConfigRevision, ConfigSnapshot, ConfigStore, RuntimeConfig
 from .diagnostics import configure_logging, journal_entries, service_status
+from .front_inference_service import capabilities, read_events, read_health, validation_report
+from .inference_contracts import DetectionObservation, FrontValidationReport, InferenceCapabilities, InferenceHealth, WarningCandidate
 from .media_verifier import verify_media
 from .store import RuntimeStore
 from .test_lab import TestReport, TestRunRequest, run_test
@@ -355,6 +357,40 @@ def create_app(database: Path, record_dir: Path, hls_dir: Path, datalog_dir: Pat
             filename="mh02-diagnostics.json",
             background=BackgroundTask(os.unlink, temporary_path),
         )
+
+    def inference_paths() -> Tuple[Path, Path]:
+        inference = config_store.snapshot().config.inference
+        return Path(inference.output_path), Path(inference.health_path)
+
+    @app.get("/api/inference/capabilities", response_model=InferenceCapabilities)
+    def inference_capabilities() -> InferenceCapabilities:
+        return capabilities()
+
+    @app.get("/api/inference/health", response_model=InferenceHealth)
+    def inference_health() -> InferenceHealth:
+        _output_path, health_path = inference_paths()
+        health = read_health(health_path)
+        if health is not None:
+            return health
+        return InferenceHealth(status="not_running", last_update_utc=datetime.now(timezone.utc), diagnostics=["front inference health artifact is not available"])
+
+    @app.get("/api/inference/detections", response_model=List[DetectionObservation])
+    def inference_detections(limit: int = 100) -> List[DetectionObservation]:
+        output_path, _health_path = inference_paths()
+        return [item for item in read_events(output_path, DetectionObservation, min(max(limit, 1), 500))]
+
+    @app.get("/api/inference/warnings", response_model=List[WarningCandidate])
+    def inference_warnings(limit: int = 100) -> List[WarningCandidate]:
+        output_path, _health_path = inference_paths()
+        return [item for item in read_events(output_path, WarningCandidate, min(max(limit, 1), 500))]
+
+    @app.post("/api/front-validation/run", response_model=FrontValidationReport)
+    def front_validation() -> FrontValidationReport:
+        output_path, health_path = inference_paths()
+        health = read_health(health_path)
+        detections = len(read_events(output_path, DetectionObservation, 500))
+        warnings = len(read_events(output_path, WarningCandidate, 500))
+        return validation_report(health, detections, warnings)
 
     @app.get("/api/health")
     def health(date: Optional[str] = None) -> Dict[str, Any]:

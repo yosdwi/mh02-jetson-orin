@@ -52,12 +52,22 @@ class FatigueConfig(BaseModel):
 
 
 class InferenceConfig(BaseModel):
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, protected_namespaces=())
 
     front_model: str = "disabled"
     front_model_version: str = "unconfigured"
     front_sample_fps: float = Field(default=10.0, gt=0, le=30)
     enabled: bool = False
+    source_kind: Literal["live_rtsp", "replay_mp4"] = "live_rtsp"
+    source: str = "rtsp://127.0.0.1:8554/front"
+    model_config_path: str = "/etc/mh02/deepstream/dashcamnet_pgie_config.txt"
+    engine_path: str = "/etc/mh02/models/dashcamnet.engine"
+    tracker_lib_path: str = "/opt/nvidia/deepstream/deepstream-6.2/lib/libnvds_nvmultiobjecttracker.so"
+    tracker_config_path: str = "/etc/mh02/deepstream/tracker_NvSORT.yml"
+    output_path: str = "/var/lib/mh02/inference/front.ndjson"
+    health_path: str = "/var/lib/mh02/inference/front-health.json"
+    confidence_threshold: float = Field(default=0.5, ge=0, le=1)
+    warning_classes: Tuple[str, ...] = ("person", "car", "truck", "bus", "motorcycle", "two-wheeler")
 
 
 class RecordingConfig(BaseModel):
@@ -93,6 +103,10 @@ class RuntimeConfig(BaseModel):
         cabin = next(camera for camera in self.cameras if camera.camera_id == "cabin")
         if self.fatigue.source != f"http://127.0.0.1:8080/live/{cabin.hls_path}.m3u8":
             raise ValueError("fatigue source must match the configured cabin HLS route")
+        if self.inference.source_kind == "live_rtsp" and not self.inference.source.startswith("rtsp://"):
+            raise ValueError("live front inference source must be an RTSP URL")
+        if self.inference.source_kind == "replay_mp4" and not self.inference.source:
+            raise ValueError("front inference replay source must not be empty")
         return self
 
 
@@ -134,6 +148,7 @@ RESTART_ALLOWLIST: Tuple[str, ...] = (
     "mh02-aggregate.service",
     "mh02-alerts.service",
     "mh02-web.service",
+    "mh02-front-inference.service",
 )
 
 
@@ -234,7 +249,7 @@ class ConfigStore:
         if previous.recording != current.recording:
             return ("mh02-vlog.service", "mh02-cabin.service")
         if previous.inference != current.inference:
-            return ("mh02-fatigue.service",)
+            return ("mh02-fatigue.service", "mh02-front-inference.service")
         return ()
 
     @staticmethod

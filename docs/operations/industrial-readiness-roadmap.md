@@ -9,6 +9,12 @@ The current `main` implementation includes a versioned Pydantic runtime configur
 
 This checkpoint is locally verified only. The physical Jetson inventory still has one UVC camera, no verified cabin publisher, and no deployed copy of these changes. Therefore dual-camera capture, live cabin fatigue, persistent journald behavior, service restart execution and hardware recording continuity remain unverified and are not release claims. The example configuration uses stable placeholder camera by-id paths until commissioning maps real devices.
 
+### Milestone B implementation checkpoint — DeepStream adapter
+
+The source now includes a disabled-by-default DeepStream 6.2/TensorRT front adapter with live RTSP and MP4 replay modes, `nvinfer`/`nvtracker` graph construction, typed detection and advisory-warning artifacts, model digest capture, health metrics and web validation/overlay surfaces. It fails closed when runtime plugins, `pyds`, model assets or tracker configuration are absent, and it does not own recording. The measured Jetson tuple is L4T R35.3.1 / JetPack 5.1.1, CUDA 11.4, TensorRT 8.5.2 and GStreamer 1.16.3; an isolated user-space DeepStream extraction is the only permitted deployment path for this checkpoint.
+
+This checkpoint is not a claim that Milestone B is complete. It becomes evidence-backed only after the target loads the NVIDIA plugins, runs an approved TensorRT engine on live front and authorized MP4 input, and records GPU/FPS/latency/memory/recording-continuity artifacts. DashCamNet weights/engine redistribution terms and a second physical cabin camera are currently commissioning dependencies.
+
 ## Product scope / definition of done
 
 Commercial MH02 includes: front 24/7-capable vlog with bounded local retention; front pedestrian/vehicle observations and governed warnings; separate cabin closed-eyes/yawning; tamper-evident review evidence; validated GPS timestamp correlation; device commissioning, authenticated management, telemetry, controlled updates and rollback.

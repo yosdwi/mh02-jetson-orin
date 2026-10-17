@@ -92,6 +92,9 @@ def test_web_test_lab_and_configuration_endpoints_are_integrated(tmp_path: Path,
     with TestClient(app) as client:
         cameras = client.get("/api/cameras")
         report = client.post("/api/test-lab/run", json={"scenario": "yawning"})
+        inference_health = client.get("/api/inference/health")
+        inference_detections = client.get("/api/inference/detections")
+        front_validation = client.post("/api/front-validation/run")
         denied = client.post("/api/config/validate", json=default_config().model_dump(mode="json"))
         effective = client.get("/api/config/effective")
 
@@ -99,6 +102,10 @@ def test_web_test_lab_and_configuration_endpoints_are_integrated(tmp_path: Path,
     assert {item["camera_id"] for item in cameras.json()} == {"front", "cabin"}
     assert report.status_code == 200
     assert report.json()["status"] == "PASS"
+    assert inference_health.status_code == 200
+    assert inference_health.json()["status"] == "not_running"
+    assert inference_detections.json() == []
+    assert front_validation.json()["status"] == "BLOCKED"
     assert denied.status_code == 403
     assert effective.status_code == 200
     assert effective.json()["config"]["fatigue"]["camera_id"] == "cabin"

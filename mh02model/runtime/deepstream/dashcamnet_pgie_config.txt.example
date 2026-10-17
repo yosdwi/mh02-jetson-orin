@@ -1,0 +1,17 @@
+[property]
+gpu-id=0
+net-scale-factor=0.003921568627
+model-color-format=0
+model-engine-file=/etc/mh02/models/dashcamnet.engine
+labelfile-path=/etc/mh02/models/dashcamnet.labels
+infer-dims=3;544;960
+batch-size=1
+network-mode=2
+num-detected-classes=4
+interval=0
+gie-unique-id=1
+process-mode=1
+network-type=0
+cluster-mode=2
+maintain-aspect-ratio=1
+output-tensor-meta=0

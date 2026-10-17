@@ -4,6 +4,7 @@ const liveMessage = $('live-message');
 const archivePlayer = $('archive-player');
 const archiveMessage = $('archive-message');
 const archiveOverlay = $('archive-overlay');
+const frontAiOverlay = $('front-ai-overlay');
 const state = { date: '', hour: new Date().getHours(), archiveCamera: 'front', recordings: [], datalogs: [], alerts: [], health: [], cameras: [], config: null };
 let livePeer = null;
 let liveHls = null;
@@ -19,6 +20,7 @@ function closeLiveSources() {
   if (liveHls) { liveHls.destroy(); liveHls = null; }
   livePlayer.srcObject = null;
   livePlayer.removeAttribute('src');
+  frontAiOverlay.getContext('2d').clearRect(0, 0, frontAiOverlay.width, frontAiOverlay.height);
 }
 
 async function setupHlsFallback(camera) {
@@ -81,6 +83,60 @@ async function refreshCameras() {
   });
   selector.addEventListener('change', () => loadLiveCamera(selector.value));
   await loadLiveCamera(state.cameras[0] && state.cameras[0].camera_id);
+}
+
+function drawFrontDetections(detections) {
+  const context = frontAiOverlay.getContext('2d');
+  const bounds = frontAiOverlay.getBoundingClientRect();
+  const scale = window.devicePixelRatio || 1;
+  frontAiOverlay.width = Math.max(1, Math.round(bounds.width * scale));
+  frontAiOverlay.height = Math.max(1, Math.round(bounds.height * scale));
+  context.setTransform(scale, 0, 0, scale, 0, 0);
+  context.clearRect(0, 0, bounds.width, bounds.height);
+  if ($('live-camera').value !== 'front') return;
+  context.font = '12px IBM Plex Mono, monospace';
+  detections.forEach((detection) => {
+    const box = detection.bounding_box;
+    const x = box.left * bounds.width;
+    const y = box.top * bounds.height;
+    const width = box.width * bounds.width;
+    const height = box.height * bounds.height;
+    context.strokeStyle = '#b8e6b0';
+    context.lineWidth = 2;
+    context.strokeRect(x, y, width, height);
+    const label = `${detection.object_class} ${(detection.confidence * 100).toFixed(0)}%${detection.track_id ? ` #${detection.track_id}` : ''}`;
+    context.fillStyle = '#b8e6b0';
+    context.fillText(label, x + 4, Math.max(14, y - 5));
+  });
+}
+
+async function refreshInference() {
+  const healthResponse = await fetch('/api/inference/health', { cache: 'no-store' });
+  const health = await healthResponse.json();
+  setMetric('inference-status', health.status.replace('_', ' '));
+  setMetric('inference-model', `${health.model_name} · ${health.model_version}`);
+  setMetric('inference-fps', health.fps ? `${Number(health.fps).toFixed(1)} FPS` : '—');
+  setMetric('inference-latency', health.latency_p95_ms === null ? '—' : `${Number(health.latency_p95_ms).toFixed(1)} ms`);
+  const message = health.diagnostics && health.diagnostics.length ? health.diagnostics.join(' ') : `${health.detections} genuine observations · ${health.dropped_frames} dropped frames`;
+  $('inference-message').textContent = message;
+  const detectionsResponse = await fetch('/api/inference/detections?limit=25', { cache: 'no-store' });
+  const detections = detectionsResponse.ok ? await detectionsResponse.json() : [];
+  drawFrontDetections(health.status === 'running' ? detections : []);
+  const warningsResponse = await fetch('/api/inference/warnings?limit=8', { cache: 'no-store' });
+  const warnings = warningsResponse.ok ? await warningsResponse.json() : [];
+  const warningList = $('inference-warnings');
+  warningList.replaceChildren();
+  warnings.forEach((warning) => {
+    const row = document.createElement('span');
+    row.textContent = `${warning.object_class} ${(warning.confidence * 100).toFixed(0)}% · ${warning.source_kind} · evidence ${warning.evidence.status}`;
+    warningList.appendChild(row);
+  });
+}
+
+async function runFrontValidation() {
+  const response = await fetch('/api/front-validation/run', { method: 'POST' });
+  const report = await response.json();
+  $('inference-message').textContent = `${report.status} · ${report.diagnostics.join(' ') || `${report.frames} frames, ${report.detections} detections`}`;
 }
 
 function updateAggregate(sample) {
@@ -541,6 +597,7 @@ $('archive-date').value = state.date;
 $('archive-date').addEventListener('change', async (event) => { state.date = event.target.value; state.hour = 0; await refreshArchive(); });
 $('archive-camera').addEventListener('change', async (event) => { state.archiveCamera = event.target.value; state.hour = 0; await refreshArchive(); });
 $('run-test').addEventListener('click', runTestSession);
+$('run-front-validation').addEventListener('click', () => runFrontValidation().catch((error) => { $('inference-message').textContent = error.message; }));
 $('refresh-diagnostics').addEventListener('click', () => refreshDiagnostics().catch((error) => { $('diagnostics-summary').textContent = error.message; }));
 $('log-query').addEventListener('change', () => refreshDiagnostics().catch(() => {}));
 $('download-diagnostics').addEventListener('click', () => { window.location.href = '/api/diagnostics/bundle'; });
@@ -556,3 +613,5 @@ refreshDiagnostics().catch(() => { $('diagnostics-summary').textContent = 'Diagn
 loadConfiguration().catch(() => {});
 window.setInterval(refreshAggregate, 1000);
 window.setInterval(refreshArchive, 15000);
+refreshInference().catch(() => { $('inference-message').textContent = 'Inference health unavailable'; });
+window.setInterval(() => refreshInference().catch(() => {}), 2000);

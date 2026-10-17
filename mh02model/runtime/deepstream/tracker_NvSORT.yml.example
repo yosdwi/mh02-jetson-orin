@@ -1,0 +1,7 @@
+BaseConfig:
+  minDetectorConfidence: 0.25
+  minIouDiff4NewTarget: 0.7
+  minTrackerConfidence: 0.2
+  maxShadowTrackingAge: 30
+  probationAge: 3
+  maxTargetsPerStream: 100

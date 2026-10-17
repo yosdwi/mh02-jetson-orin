@@ -23,7 +23,7 @@
     <section class="hero-grid">
       <article class="panel live-panel">
         <div class="panel-heading"><div><p class="eyebrow">Live</p><h2>Camera</h2></div><div class="live-controls"><label for="live-camera">Source</label><select id="live-camera" aria-label="Live camera source"></select><span class="live-pill">LIVE</span></div></div>
-        <div class="video-frame"><video id="live-player" controls autoplay muted playsinline></video><div id="live-message" class="video-message">Waiting for camera stream</div></div>
+        <div class="video-frame"><video id="live-player" controls autoplay muted playsinline></video><canvas id="front-ai-overlay" aria-hidden="true"></canvas><div id="live-message" class="video-message">Waiting for camera stream</div></div>
       </article>
       <aside class="panel telemetry-panel">
         <div class="panel-heading"><div><p class="eyebrow">Latest</p><h2>Telemetry</h2></div><span id="aggregate-age" class="muted">—</span></div>
@@ -49,6 +49,18 @@
           <button id="run-test" class="button primary" type="button">Run session</button>
         </div>
         <div id="test-report" class="test-report empty-state">No test session yet.</div>
+      </article>
+
+      <article class="panel workspace-panel">
+        <div class="section-heading"><div><p class="eyebrow">Front AI</p><h2>Inference health</h2></div><button id="run-front-validation" class="button secondary" type="button">Validate current</button></div>
+        <div class="metric-grid inference-grid">
+          <div class="metric"><span>Status</span><strong id="inference-status">Not running</strong></div>
+          <div class="metric"><span>Model</span><strong id="inference-model">—</strong></div>
+          <div class="metric"><span>Throughput</span><strong id="inference-fps">—</strong></div>
+          <div class="metric"><span>Latency p95</span><strong id="inference-latency">—</strong></div>
+        </div>
+        <div id="inference-message" class="muted workspace-copy">No genuine front detections are displayed until DeepStream writes a verified observation artifact.</div>
+        <div id="inference-warnings" class="metric-table"></div>
       </article>
 
       <article class="panel workspace-panel">

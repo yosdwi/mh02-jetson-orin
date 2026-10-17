@@ -77,3 +77,9 @@ See [`audit`](../audits/2026-10-17-production-readiness.md) and [`release gates`
 ## Implemented control-plane slice
 
 The runtime now has a tested adapter slice for the proposed camera/control-plane boundaries: `front` and `cabin` are distinct configuration identities and MediaMTX paths; fatigue accepts only the cabin route; front recording remains a separate service; and the web surface can inspect cameras, run isolated deterministic fatigue tests, retrieve reports, inspect service/journal diagnostics, and validate/apply/rollback versioned configuration. The physical cabin source remains a commissioning dependency, and authenticated live/archive media access remains a later M3 gate.
+
+## Implemented inference adapter slice
+
+`mh02-front-inference.service` is a disabled-by-default front-only adapter. In live mode it reads the existing front RTSP publisher, and in replay mode it reads an explicitly configured MP4. Both modes feed the same DeepStream graph (`nvstreammux` -> `nvinfer` -> `nvtracker`) and emit typed observations with media PTS, model digest, normalized bounding boxes and track IDs. The web application exposes capability, health, detection, advisory-warning and validation endpoints and draws boxes only while the health artifact says the real pipeline is running. Missing plugins, bindings, model assets or tracker configuration produce `BLOCKED`; no simulated detection is emitted.
+
+This is an integration boundary, not a completed NVIDIA validation claim. The exact target inventory is L4T R35.3.1 / JetPack 5.1.1, CUDA 11.4, TensorRT 8.5.2 and GStreamer 1.16.3. DeepStream installation, DashCamNet engine provenance/licensing, plugin loading, GPU execution, concurrent workload performance and domain accuracy remain separately evidenced release gates. Raw front recording does not depend on this adapter.
