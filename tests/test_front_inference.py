@@ -8,7 +8,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parents[1] / "mh02model" / "runtime"))
 
 from mh02_runtime.configuration import default_config
-from mh02_runtime.front_inference_service import run_pipeline, validation_report
+from mh02_runtime.front_inference_service import InferenceRun, OutputWriter, run_pipeline, validation_report
 from mh02_runtime.inference_contracts import BoundingBox, DetectionObservation, InferenceCapabilities, InferenceHealth
 from mh02_runtime.warning_engine import AdvisoryPolicy, candidates_for
 
@@ -93,3 +93,18 @@ def test_missing_deepstream_assets_write_blocked_health(tmp_path: Path, monkeypa
     health = InferenceHealth.model_validate_json((tmp_path / "health.json").read_text())
     assert health.status == "blocked"
     assert "configuration asset is missing" in health.diagnostics[0]
+
+
+def test_frame_latency_is_recorded_when_tracker_pts_uses_fifo_fallback(tmp_path: Path) -> None:
+    engine = tmp_path / "model.engine"
+    engine.write_bytes(b"engine")
+    config = default_config().inference.model_copy(update={"engine_path": str(engine)})
+    writer = OutputWriter(tmp_path / "events.ndjson", tmp_path / "health.json")
+    run = InferenceRun(config, writer, Event())
+
+    run.record_frame(100)
+    latency = run.frame_latency_ms(200)
+    run.record_detection(observation().model_copy(update={"media_pts_ns": 200, "latency_ms": latency}))
+
+    assert latency is not None
+    assert run.health("running").latency_p95_ms is not None

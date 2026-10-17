@@ -260,16 +260,20 @@ class InferenceRun:
         self.received_pts[pts_ns] = time.monotonic_ns()
         self.write_health("running")
 
+    def frame_latency_ms(self, pts_ns: Optional[int]) -> Optional[float]:
+        received = self.received_pts.pop(pts_ns, None) if pts_ns is not None else None
+        if received is None and self.received_pts:
+            _oldest_pts, received = next(iter(self.received_pts.items()))
+            del self.received_pts[_oldest_pts]
+        if received is None:
+            return None
+        return max(0.0, (time.monotonic_ns() - received) / 1_000_000)
+
     def record_detection(self, observation: DetectionObservation) -> None:
         self.detections += 1
-        if observation.media_pts_ns is not None:
-            received = self.received_pts.get(observation.media_pts_ns)
-            if received is not None:
-                latency = max(0.0, (time.monotonic_ns() - received) / 1_000_000)
-                self.latencies.append(latency)
-                del self.received_pts[observation.media_pts_ns]
-                deltas = self.latencies[-MAX_LATENCIES:]
-                self.latencies = deltas
+        if observation.latency_ms is not None:
+            self.latencies.append(observation.latency_ms)
+            self.latencies = self.latencies[-MAX_LATENCIES:]
         self.writer.event(observation)
         policy = AdvisoryPolicy(confidence_threshold=self.config.confidence_threshold, classes=self.config.warning_classes)
         for candidate in candidates_for((observation,), policy):
@@ -394,6 +398,7 @@ def run_pipeline(config: InferenceConfig, output_path: Path, health_path: Path, 
             frame_height = max(1.0, float(frame_meta.source_frame_height or 1080))
             pts_ns = int(frame_meta.buf_pts) if frame_meta.buf_pts != Gst.CLOCK_TIME_NONE else None
             object_list = frame_meta.obj_meta_list
+            frame_latency_ms = run.frame_latency_ms(pts_ns)
             while object_list is not None:
                 try:
                     object_meta = pyds.NvDsObjectMeta.cast(object_list.data)
@@ -419,6 +424,7 @@ def run_pipeline(config: InferenceConfig, output_path: Path, health_path: Path, 
                     model_name=config.front_model,
                     model_version=config.front_model_version,
                     model_digest_sha256=run.model_digest,
+                    latency_ms=frame_latency_ms,
                 )
                 run.record_detection(observation)
                 object_list = object_list.next
