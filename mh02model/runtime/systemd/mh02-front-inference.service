@@ -3,7 +3,6 @@ Description=MH02 NVIDIA DeepStream front inference
 After=mh02-vlog.service mh02-mediamtx.service
 Requires=mh02-mediamtx.service
 ConditionPathExists=/etc/mh02/config.json
-ConditionPathExists=/etc/mh02/models/dashcamnet.engine
 
 [Service]
 User=smartd

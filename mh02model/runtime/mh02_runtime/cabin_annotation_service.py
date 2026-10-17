@@ -90,7 +90,7 @@ def health(config: CabinAnnotationConfig, status: str, frames: int, observations
 def pipeline_description(config: CabinAnnotationConfig) -> str:
     return (
         f'rtspsrc location="{config.source}" latency=200 protocols=tcp ! '
-        "rtph264depay ! h264parse ! nvv4l2decoder ! "
+        "rtph264depay ! h264parse ! nvv4l2decoder ! queue ! mux.sink_0 "
         "nvstreammux name=mux batch-size=1 width=1920 height=1080 live-source=true batched-push-timeout=40000 ! "
         "tee name=frames "
         "frames. ! queue max-size-buffers=2 leaky=downstream ! nvstreamdemux name=demux "
