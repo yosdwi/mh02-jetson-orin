@@ -85,6 +85,8 @@ class InferenceHealth(BaseModel):
     dropped_frames: int = Field(default=0, ge=0)
     fps: float = Field(default=0, ge=0)
     latency_p95_ms: Optional[float] = Field(default=None, ge=0)
+    latency_p50_ms: Optional[float] = Field(default=None, ge=0)
+    latency_p99_ms: Optional[float] = Field(default=None, ge=0)
     process_rss_mb: Optional[float] = Field(default=None, ge=0)
     gpu_utilization_percent: Optional[float] = Field(default=None, ge=0, le=100)
     last_media_pts_ns: Optional[int] = Field(default=None, ge=0)

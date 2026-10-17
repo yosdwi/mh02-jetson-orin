@@ -280,6 +280,7 @@ class InferenceRun:
     def health(self, status: str, diagnostics: Optional[List[str]] = None) -> InferenceHealth:
         elapsed = max(0.001, time.monotonic() - self.started_monotonic)
         sorted_latencies = sorted(self.latencies)
+        percentile = lambda fraction: sorted_latencies[min(len(sorted_latencies) - 1, int(len(sorted_latencies) * fraction))] if sorted_latencies else None
         p95 = sorted_latencies[min(len(sorted_latencies) - 1, int(len(sorted_latencies) * 0.95))] if sorted_latencies else None
         return InferenceHealth(
             status=status,
@@ -294,6 +295,8 @@ class InferenceRun:
             dropped_frames=self.dropped_frames,
             fps=self.frames / elapsed,
             latency_p95_ms=p95,
+            latency_p50_ms=percentile(0.50),
+            latency_p99_ms=percentile(0.99),
             process_rss_mb=process_rss_mb(),
             gpu_utilization_percent=gpu_load_percent(),
             last_media_pts_ns=self.last_media_pts_ns,
