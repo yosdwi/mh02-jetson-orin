@@ -5,7 +5,6 @@ import json
 import logging
 import os
 import re
-import re
 import signal
 import tempfile
 import time
@@ -21,6 +20,8 @@ gi.require_version("Gst", "1.0")
 from gi.repository import Gst
 
 from .models import AlertEvent
+from .evidence import coverage_gaps, evidence_status
+from .media_verifier import verify_media
 from .store import RuntimeStore
 
 
@@ -61,20 +62,6 @@ def cue_position(payload: str) -> int:
     return 5
 
 
-def has_mp4_index(path: Path) -> bool:
-    try:
-        size = path.stat().st_size
-        with path.open("rb") as handle:
-            if b"moov" in handle.read(min(size, 1024 * 1024)):
-                return True
-            if size > 1024 * 1024:
-                handle.seek(-1024 * 1024, 2)
-                return b"moov" in handle.read(1024 * 1024)
-    except OSError:
-        return False
-    return False
-
-
 def read_recordings(directory: Path, start: datetime, end: datetime) -> List[RecordingInfo]:
     result: List[RecordingInfo] = []
     for path in directory.glob("*.mp4"):
@@ -85,7 +72,7 @@ def read_recordings(directory: Path, start: datetime, end: datetime) -> List[Rec
             ended = datetime.fromisoformat(metadata["ended_at_utc"])
         except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError):
             continue
-        if not metadata.get("complete") or not has_mp4_index(path):
+        if not metadata.get("complete") or not verify_media(path).verified:
             continue
         if started < end and ended > start:
             subtitle = path.with_suffix(".vtt")
@@ -133,7 +120,7 @@ def trim_recording(source: RecordingInfo, start: datetime, end: datetime, output
             raise RuntimeError(f"GStreamer error for {source.path.name}: {error} ({detail})")
     finally:
         pipeline.set_state(Gst.State.NULL)
-    if not output.exists() or not has_mp4_index(output):
+    if not output.exists() or not verify_media(output).verified:
         raise RuntimeError(f"GStreamer produced an invalid clip for {source.path.name}")
 
 
@@ -178,7 +165,7 @@ def combine_recordings(parts: Sequence[Path], output: Path) -> None:
             f"mp4mux faststart=true ! filesink location={gst_location(output)}",
             output.name,
         )
-    if not output.exists() or not has_mp4_index(output):
+    if not output.exists() or not verify_media(output).verified:
         raise RuntimeError("GStreamer produced an invalid concatenated alert clip")
 
 
@@ -257,14 +244,31 @@ def export_event(event: AlertEvent, store: RuntimeStore, record_dir: Path, clip_
     output = clip_dir / f"{name}.mp4"
     subtitle = clip_dir / f"{name}.vtt"
     metadata = clip_dir / f"{name}.json"
-    if output.exists() and subtitle.exists() and has_mp4_index(output):
-        if event.clip_filename != output.name:
-            store.save_alert(event.model_copy(update={"clip_filename": output.name, "clip_subtitle_filename": subtitle.name}))
-        return False
-
     recordings = read_recordings(record_dir, event.evidence_start_utc, event.evidence_end_utc)
     if not recordings:
+        store.save_alert(event.model_copy(update={"evidence_status": "unavailable"}))
         return False
+    intervals = [(recording.started_at_utc, recording.ended_at_utc) for recording in recordings]
+    status = evidence_status(intervals, event.evidence_start_utc, event.evidence_end_utc)
+    gaps = coverage_gaps(intervals, event.evidence_start_utc, event.evidence_end_utc)
+    available_duration = sum(
+        max(0.0, (min(end, event.evidence_end_utc) - max(start, event.evidence_start_utc)).total_seconds())
+        for start, end in intervals
+        if end > event.evidence_start_utc and start < event.evidence_end_utc
+    )
+    current_recordings = tuple(recording.path.name for recording in recordings)
+    if output.exists() and subtitle.exists() and metadata.exists() and verify_media(output).verified:
+        try:
+            existing_metadata = json.loads(metadata.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            existing_metadata = {}
+        if (
+            existing_metadata.get("evidence_status") == status
+            and tuple(existing_metadata.get("recording_filenames", ())) == current_recordings
+        ):
+            if event.clip_filename != output.name or event.evidence_status != status:
+                store.save_alert(event.model_copy(update={"clip_filename": output.name, "clip_subtitle_filename": subtitle.name, "evidence_status": status}))
+            return False
     clip_dir.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix=f"{name}-", dir=clip_dir) as temporary_dir:
         parts: List[Path] = []
@@ -294,10 +298,15 @@ def export_event(event: AlertEvent, store: RuntimeStore, record_dir: Path, clip_
             "started_at_utc": event.evidence_start_utc.isoformat(),
             "ended_at_utc": event.evidence_end_utc.isoformat(),
             "duration_seconds": (event.evidence_end_utc - event.evidence_start_utc).total_seconds(),
-            "complete": True,
+            "available_duration_seconds": available_duration,
+            "complete": status == "complete",
+            "evidence_status": status,
+            "recording_camera_id": event.recording_camera_id,
+            "recording_filenames": list(current_recordings),
+            "missing_intervals": [{"start": start.isoformat(), "end": end.isoformat()} for start, end in gaps],
         },
     )
-    store.save_alert(event.model_copy(update={"clip_filename": output.name, "clip_subtitle_filename": subtitle.name}))
+    store.save_alert(event.model_copy(update={"clip_filename": output.name, "clip_subtitle_filename": subtitle.name, "evidence_status": status}))
     LOGGER.info("Exported alert clip %s from %s recording(s)", output.name, len(recordings))
     return True
 

@@ -113,7 +113,7 @@ function overlayText(data) {
   const longitude = nmeaCoordinate(gps && gps.longitude, false);
   const speed = gps && gps.speed_kph !== null && gps.speed_kph !== undefined ? String(Math.round(Number(gps.speed_kph))).padStart(3, '0') : '---';
   const payload = data.redis_payload || {};
-  const acceleration = payload.acceleration ?? payload.acc ?? payload.ACC ?? payload.acc_status ?? (gps ? 'ON' : '--');
+  const acceleration = payload.acceleration ?? payload.acc ?? payload.ACC ?? payload.acc_status ?? '--';
   const timestamp = new Date(data.timestamp_utc);
   const date = `${String(timestamp.getDate()).padStart(2, '0')}-${String(timestamp.getMonth() + 1).padStart(2, '0')}-${timestamp.getFullYear()}`;
   const time = timestamp.toLocaleTimeString([], { hour12: false });
