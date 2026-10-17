@@ -15,6 +15,18 @@ The source now includes a disabled-by-default DeepStream 6.2/TensorRT front adap
 
 This checkpoint is not a claim that Milestone B is complete. It becomes evidence-backed only after the target loads the NVIDIA plugins, runs an approved TensorRT engine on live front and authorized MP4 input, and records GPU/FPS/latency/memory/recording-continuity artifacts. DashCamNet weights/engine redistribution terms and a second physical cabin camera are currently commissioning dependencies.
 
+## P0 frame synchronization checkpoint — 2026-10-18
+
+Commits `b3810d5`, `558e294`, `59d8a60`, and `211e01e` add the versioned `FrameRef` contract, stream-epoch/frame-sequence identity manager, exact Cabin `FrameResultJoiner`, branch-local duplicate-PTS handling, Front `NvDsFrameMeta.frame_num` timing correlation, bounded asynchronous Front artifact persistence, and a background telemetry cache. OSD callbacks no longer call `RuntimeStore.latest_aggregate()`. Unmatched Front PTS values are reported as unknown latency; an unrelated pending frame is never consumed as a fallback.
+
+Automated validation: `PYTHONPATH=mh02model/runtime pytest -q` passed 41 tests, with coverage for out-of-order and late inference, camera/epoch contamination, duplicate/missing/discontinuous PTS, future/stale telemetry, and Front frame-number latency correlation. Python compileall and `git diff --check` also passed.
+
+Development Jetson evidence: the user-space DeepStream 6.2 plugins and `pyds` loaded on the L4T R35.3.1 / JetPack 5.1.1 device. After the Front service restart, `front-health.json` reported `frames=5968`, `fps=28.7356`, `dropped_frames=0`, `unmatched_latency_frames=0`, `duplicate_pts=0`, `pts_discontinuities=0`, and `missing_pts=0`; the sample engine reported zero detections in that window, so detector coverage is not claimed. `gst-discoverer-1.0` identified `/front-annotated` as live H.264 1920x1080. A longer `gst-launch` decode probe timed out with Jetson `Stream format not found` drops and is therefore not a decode PASS. Clean `mh02-vlog.service` remained active and finalized Front MP4 files continued to grow. `tegrastats` observed roughly 5.1–5.3 GB RAM used, GR3D samples of 0–44%, and GPU/CPU-system temperatures about 56–62 C during the window.
+
+Cabin remains BLOCKED on physical evidence: the device exposes one UVC camera identity with `/dev/video0` and `/dev/video1`, no verified `/cabin` publisher, and `mh02-cabin-annotation.service` is intentionally inactive in the development configuration. GPS hardware was serial-accessible but observed as `GPS NO SIGNAL / FIX_EXPIRED`; historical coordinates were not treated as live overlay data. p50/p95/p99 end-to-end latency and encoded overlay pixel inspection remain unverified.
+
+The rollback reference for the staged device deployment is `/home/smartd/mh02_backups/p0-frame-sync-20261018T180025Z-before-frame-num`; restore its `runtime-before` tree, run `systemctl daemon-reload` if units are changed, and restart only the affected inference service. Do not remove recordings or SQLite state.
+
 ## Product scope / definition of done
 
 Commercial MH02 includes: front 24/7-capable vlog with bounded local retention; front pedestrian/vehicle observations and governed warnings; separate cabin closed-eyes/yawning; tamper-evident review evidence; validated GPS timestamp correlation; device commissioning, authenticated management, telemetry, controlled updates and rollback.
