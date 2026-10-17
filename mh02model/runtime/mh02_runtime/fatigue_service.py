@@ -10,8 +10,6 @@ from pathlib import Path
 from threading import Event
 from typing import Tuple
 
-import cv2
-
 from .models import FatigueState
 from .store import RuntimeStore
 
@@ -30,6 +28,7 @@ def run(args: argparse.Namespace, stop: Event) -> None:
     if args.camera_id != "cabin" or "/front" in args.source:
         raise ValueError("Fatigue inference requires the explicit cabin camera source")
     import mediapipe as mp
+    import cv2
 
     store = RuntimeStore(Path(args.database))
     sys.path.insert(0, str(Path(args.app_root)))

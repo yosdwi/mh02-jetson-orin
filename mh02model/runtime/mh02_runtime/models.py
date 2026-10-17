@@ -137,5 +137,7 @@ class AlertEvent(BaseModel):
     clip_filename: Optional[str] = None
     clip_subtitle_filename: Optional[str] = None
     camera_id: str = "cabin"
+    recording_camera_id: str = "front"
+    evidence_status: Literal["pending", "complete", "partial", "unavailable"] = "pending"
     source_status: FatigueStatus = "fresh"
     boot_id: str = "legacy"

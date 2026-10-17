@@ -16,6 +16,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.background import BackgroundTask
 
 from .models import AlertEvent, DatalogFile, Recording
+from .media_verifier import verify_media
 from .store import RuntimeStore
 
 
@@ -30,24 +31,9 @@ def read_json(path: Path) -> Dict[str, Any]:
         return {}
 
 
-def has_mp4_index(path: Path) -> bool:
-    try:
-        size = path.stat().st_size
-        with path.open("rb") as handle:
-            head = handle.read(min(size, 1024 * 1024))
-            if b"moov" in head:
-                return True
-            if size > 1024 * 1024:
-                handle.seek(-1024 * 1024, 2)
-                return b"moov" in handle.read(1024 * 1024)
-    except OSError:
-        return False
-    return False
-
-
 def recording_from(video: Path) -> Optional[Recording]:
     metadata = read_json(video.with_suffix(".json"))
-    if not metadata or not metadata.get("complete", False) or not has_mp4_index(video):
+    if not metadata or not metadata.get("complete", False) or not verify_media(video).verified:
         return None
     started = metadata.get("started_at_utc")
     ended = metadata.get("ended_at_utc")

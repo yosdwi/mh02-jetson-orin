@@ -19,25 +19,12 @@ gi.require_version("GLib", "2.0")
 from gi.repository import GLib, Gst
 
 from .models import AggregateSample
-from .evidence import render_vtt
+from .evidence import render_vtt, samples_for_segment, vtt_clock_source
+from .media_verifier import verify_media
 from .store import RuntimeStore, utc_now
 
 
 LOGGER = logging.getLogger("mh02.vlog")
-
-
-def has_mp4_index(path: Path) -> bool:
-    try:
-        size = path.stat().st_size
-        with path.open("rb") as handle:
-            if b"moov" in handle.read(min(size, 1024 * 1024)):
-                return True
-            if size > 1024 * 1024:
-                handle.seek(-1024 * 1024, 2)
-                return b"moov" in handle.read(1024 * 1024)
-    except OSError:
-        return False
-    return False
 
 
 class SubtitleWriter:
@@ -47,7 +34,8 @@ class SubtitleWriter:
         self.camera_id = camera_id
         self.stop = Event()
         self.lock = threading.Lock()
-        self.sequence = 0
+        latest = self.store.latest_aggregate()
+        self.sequence = latest.sequence if latest is not None else 0
         self.handle = None
         self.segment_path: Optional[Path] = None
         self.segment_start_utc: Optional[datetime] = None
@@ -78,6 +66,8 @@ class SubtitleWriter:
             self.segment_start_utc = utc_now()
             self.segment_start_pts_ns = segment_start_pts_ns
             self.samples = []
+            latest = self.store.latest_aggregate()
+            self.sequence = max(self.sequence, latest.sequence if latest is not None else 0)
             self._write_metadata(False, None)
             LOGGER.info("Opened telemetry track %s", sidecar)
 
@@ -98,6 +88,7 @@ class SubtitleWriter:
     def _write_metadata(self, complete: bool, ended_at: Optional[datetime], duration: Optional[float] = None) -> None:
         if self.segment_path is None or self.segment_start_utc is None:
             return
+        clock_source = vtt_clock_source(self.samples, self.segment_start_pts_ns)
         payload = {
             "camera_id": self.camera_id,
             "filename": self.segment_path.name,
@@ -106,9 +97,9 @@ class SubtitleWriter:
             "duration_seconds": duration,
             "complete": complete,
             "state": "VERIFIED" if complete else "FINALIZING",
-            "clock_source": "media_pts" if self.segment_start_pts_ns is not None else "utc_observed",
+            "clock_source": clock_source,
             "segment_start_pts_ns": self.segment_start_pts_ns,
-            "timestamp_uncertainty_ms": 0 if self.segment_start_pts_ns is not None else 1000,
+            "timestamp_uncertainty_ms": 0 if clock_source == "media_pts" else 1000,
         }
         metadata_path = self.segment_path.with_suffix(".json")
         fd, temporary = tempfile.mkstemp(prefix="recording-", suffix=".json.tmp", dir=metadata_path.parent)
@@ -134,12 +125,13 @@ class SubtitleWriter:
         with self.lock:
             if self.handle is None:
                 return
-            self.samples.append(sample)
+            if self.segment_start_utc is not None:
+                self.samples.extend(samples_for_segment([sample], self.segment_start_utc))
 
     def finalize(self, filename: str) -> None:
         path = Path(filename)
         metadata_path = path.with_suffix(".json")
-        if not path.exists() or not metadata_path.exists() or not has_mp4_index(path):
+        if not path.exists() or not metadata_path.exists() or not verify_media(path).verified:
             return
         try:
             metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
@@ -242,7 +234,8 @@ def run(args: argparse.Namespace, stop: Event) -> None:
                 subtitles.open(path, media_pts_ns(message))
             elif name == "splitmuxsink-fragment-closed" and path:
                 if subtitles.segment_path is not None and Path(path) == subtitles.segment_path:
-                    subtitles.close(True)
+                    subtitles.close(False)
+                    subtitles.finalize(path)
                 else:
                     subtitles.finalize(path)
 
