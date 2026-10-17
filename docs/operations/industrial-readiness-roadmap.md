@@ -3,6 +3,12 @@
 **Status:** proposed execution baseline, not a commitment that the system is already production-ready.  
 **Owner signoffs needed:** Edge Engineering, Mine Operations, Safety, Cybersecurity/IT, Product/Commercial.
 
+## Milestone A implementation checkpoint — 2026-10-17
+
+The current `main` implementation includes a versioned Pydantic runtime configuration store with validation, history, rollback and an allowlisted restart API; explicit front/cabin camera routes and systemd owners; JSON journald formatting plus a persistent-retention example; and a web test lab with deterministic isolated fatigue simulations, live-cabin fail-closed behavior, report persistence, camera selection and diagnostics bundles. Regression coverage exercises these paths through the FastAPI surface.
+
+This checkpoint is locally verified only. The physical Jetson inventory still has one UVC camera, no verified cabin publisher, and no deployed copy of these changes. Therefore dual-camera capture, live cabin fatigue, persistent journald behavior, service restart execution and hardware recording continuity remain unverified and are not release claims. The example configuration uses stable placeholder camera by-id paths until commissioning maps real devices.
+
 ## Product scope / definition of done
 
 Commercial MH02 includes: front 24/7-capable vlog with bounded local retention; front pedestrian/vehicle observations and governed warnings; separate cabin closed-eyes/yawning; tamper-evident review evidence; validated GPS timestamp correlation; device commissioning, authenticated management, telemetry, controlled updates and rollback.

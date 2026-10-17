@@ -2,15 +2,20 @@
 Description=MH02 USB camera vlog service
 After=mh02-mediamtx.service
 Requires=mh02-mediamtx.service
+ConditionPathExists=/etc/mh02/config.json
 
 [Service]
 User=smartd
 SupplementaryGroups=video
 WorkingDirectory=/home/smartd/mh02_runtime
 Environment=PYTHONPATH=/home/smartd/mh02_runtime
-ExecStart=/home/smartd/mh02_runtime/.venv/bin/python -m mh02_runtime.vlog_service
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/home/smartd/mh02_runtime/.venv/bin/python -m mh02_runtime.vlog_service --camera-id front --config-path /etc/mh02/config.json
 Restart=always
 RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=mh02-vlog
 
 [Install]
 WantedBy=multi-user.target

@@ -53,6 +53,11 @@ class RuntimeStore:
                     service_name TEXT PRIMARY KEY,
                     sequence INTEGER NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS test_reports (
+                    report_id TEXT PRIMARY KEY,
+                    created_at_utc TEXT NOT NULL,
+                    payload_json TEXT NOT NULL
+                );
                 """
             )
 
@@ -177,6 +182,26 @@ class RuntimeStore:
                 "ON CONFLICT(service_name) DO UPDATE SET sequence=excluded.sequence",
                 (service_name, sequence),
             )
+
+    def save_test_report(self, report_id: str, created_at_utc: datetime, payload_json: str) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                "INSERT INTO test_reports (report_id, created_at_utc, payload_json) VALUES (?, ?, ?) "
+                "ON CONFLICT(report_id) DO UPDATE SET created_at_utc=excluded.created_at_utc, payload_json=excluded.payload_json",
+                (report_id, created_at_utc.isoformat(), payload_json),
+            )
+            connection.execute(
+                "DELETE FROM test_reports WHERE report_id NOT IN "
+                "(SELECT report_id FROM test_reports ORDER BY created_at_utc DESC LIMIT 200)",
+            )
+
+    def test_reports(self, limit: int = 50) -> List[str]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT payload_json FROM test_reports ORDER BY created_at_utc DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        return [str(row["payload_json"]) for row in rows]
 
 
 def utc_now() -> datetime:

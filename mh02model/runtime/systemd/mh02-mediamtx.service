@@ -9,6 +9,9 @@ WorkingDirectory=/home/smartd/mh02_runtime
 ExecStart=/usr/local/bin/mediamtx /home/smartd/mh02_runtime/mediamtx.yml
 Restart=always
 RestartSec=3
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=mh02-mediamtx
 
 [Install]
 WantedBy=multi-user.target

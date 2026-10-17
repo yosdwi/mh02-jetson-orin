@@ -20,6 +20,7 @@ gi.require_version("Gst", "1.0")
 from gi.repository import Gst
 
 from .models import AlertEvent
+from .diagnostics import configure_logging
 from .evidence import coverage_gaps, evidence_status
 from .media_verifier import verify_media
 from .store import RuntimeStore
@@ -335,7 +336,7 @@ def parser() -> argparse.ArgumentParser:
 
 
 def main() -> int:
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    configure_logging("mh02.alert-clips")
     stop = Event()
     signal.signal(signal.SIGTERM, lambda _signum, _frame: stop.set())
     signal.signal(signal.SIGINT, lambda _signum, _frame: stop.set())

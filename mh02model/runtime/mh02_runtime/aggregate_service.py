@@ -12,6 +12,7 @@ from typing import Any, Dict, Tuple
 import redis
 
 from .models import AggregateSample, JsonValue
+from .diagnostics import configure_logging
 from .store import RuntimeStore, utc_now
 
 
@@ -91,7 +92,7 @@ def parser() -> argparse.ArgumentParser:
 
 
 def main() -> int:
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    configure_logging("mh02.aggregate")
     stop = Event()
     signal.signal(signal.SIGTERM, lambda _signum, _frame: stop.set())
     signal.signal(signal.SIGINT, lambda _signum, _frame: stop.set())

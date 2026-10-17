@@ -73,3 +73,7 @@ Compare NVIDIA DashCamNet, PeopleNet+TrafficCamNet and licensing-cleared small Y
 5. Cabin parity, derived overlay rendering and fleet staged rollout/rollback.
 
 See [`audit`](../audits/2026-10-17-production-readiness.md) and [`release gates`](../operations/release-gates.md).
+
+## Implemented control-plane slice
+
+The runtime now has a tested adapter slice for the proposed camera/control-plane boundaries: `front` and `cabin` are distinct configuration identities and MediaMTX paths; fatigue accepts only the cabin route; front recording remains a separate service; and the web surface can inspect cameras, run isolated deterministic fatigue tests, retrieve reports, inspect service/journal diagnostics, and validate/apply/rollback versioned configuration. The physical cabin source remains a commissioning dependency, and authenticated live/archive media access remains a later M3 gate.

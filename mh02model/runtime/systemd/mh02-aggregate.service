@@ -6,9 +6,13 @@ After=mh02-gps.service
 User=smartd
 WorkingDirectory=/home/smartd/mh02_runtime
 Environment=PYTHONPATH=/home/smartd/mh02_runtime
+Environment=PYTHONUNBUFFERED=1
 ExecStart=/home/smartd/mh02_runtime/.venv/bin/python -m mh02_runtime.aggregate_service
 Restart=always
 RestartSec=3
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=mh02-aggregate
 
 [Install]
 WantedBy=multi-user.target

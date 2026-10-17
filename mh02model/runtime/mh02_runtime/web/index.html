@@ -22,7 +22,7 @@
 
     <section class="hero-grid">
       <article class="panel live-panel">
-        <div class="panel-heading"><div><p class="eyebrow">Live</p><h2>Camera</h2></div><span class="live-pill">LIVE</span></div>
+        <div class="panel-heading"><div><p class="eyebrow">Live</p><h2>Camera</h2></div><div class="live-controls"><label for="live-camera">Source</label><select id="live-camera" aria-label="Live camera source"></select><span class="live-pill">LIVE</span></div></div>
         <div class="video-frame"><video id="live-player" controls autoplay muted playsinline></video><div id="live-message" class="video-message">Waiting for camera stream</div></div>
       </article>
       <aside class="panel telemetry-panel">
@@ -39,8 +39,36 @@
       </aside>
     </section>
 
+    <section class="workspace-grid">
+      <article class="panel workspace-panel">
+        <div class="section-heading"><div><p class="eyebrow">Test lab</p><h2>Fatigue validation</h2></div><span class="simulation-badge">ISOLATED</span></div>
+        <p class="muted workspace-copy">Run a deterministic closed-eyes or yawning session. Simulation reports never write operational alerts or raw footage.</p>
+        <div class="control-row">
+          <label for="test-scenario">Scenario</label><select id="test-scenario"><option value="closed_eyes">Closed eyes</option><option value="yawning">Yawning</option></select>
+          <label for="test-source">Source</label><select id="test-source"><option value="simulation">Simulation</option><option value="live_cabin">Live cabin</option></select>
+          <button id="run-test" class="button primary" type="button">Run session</button>
+        </div>
+        <div id="test-report" class="test-report empty-state">No test session yet.</div>
+      </article>
+
+      <article class="panel workspace-panel">
+        <div class="section-heading"><div><p class="eyebrow">Diagnostics</p><h2>Runtime health</h2></div><button id="refresh-diagnostics" class="button secondary" type="button">Refresh</button></div>
+        <div id="diagnostics-summary" class="diagnostics-summary">Not loaded</div>
+        <div class="control-row diagnostics-controls"><label for="log-query">Search</label><input id="log-query" type="search" placeholder="event or service"><button id="download-diagnostics" class="button secondary" type="button">Download bundle</button></div>
+        <pre id="diagnostics-log" class="diagnostics-log">No logs loaded.</pre>
+      </article>
+    </section>
+
+    <section class="panel config-panel">
+      <div class="section-heading"><div><p class="eyebrow">Control plane</p><h2>Effective configuration</h2></div><span id="config-revision" class="muted">Revision —</span></div>
+      <p class="muted workspace-copy">Changes are schema-validated, versioned, and restart only the allowlisted services. Set the device admin token before mutating configuration.</p>
+      <div class="control-row config-controls"><label for="admin-token">Admin token</label><input id="admin-token" type="password" autocomplete="off" placeholder="Required for changes"><button id="load-config" class="button secondary" type="button">Load</button><button id="validate-config" class="button secondary" type="button">Validate</button><button id="apply-config" class="button primary" type="button">Apply</button><select id="config-history" aria-label="Configuration history"><option value="">History</option></select><button id="rollback-config" class="button secondary" type="button">Rollback</button><button id="restart-config" class="button secondary" type="button" disabled>Restart required</button></div>
+      <textarea id="config-editor" class="config-editor" spellcheck="false" aria-label="Runtime configuration JSON"></textarea>
+      <div id="config-message" class="muted">Configuration is read-only until an admin token is supplied.</div>
+    </section>
+
     <section class="archive-section panel">
-      <div class="section-heading"><div><p class="eyebrow">Recordings</p><h2>Video library</h2></div><div class="archive-date"><label for="archive-date">Date</label><input id="archive-date" type="date"></div></div>
+      <div class="section-heading"><div><p class="eyebrow">Recordings</p><h2>Video library</h2></div><div class="archive-date"><label for="archive-camera">Camera</label><select id="archive-camera" aria-label="Archive camera"><option value="front">front</option><option value="cabin">cabin</option></select><label for="archive-date">Date</label><input id="archive-date" type="date"></div></div>
       <div id="recording-grid" class="recording-grid"><div class="empty-state">Select an hour with recordings</div></div>
       <div id="archive-viewer" class="archive-viewer" hidden>
         <div class="archive-player"><video id="archive-player" controls preload="metadata"></video><div id="archive-message" class="video-message">Select a recording</div><div id="archive-overlay" class="telemetry-overlay" hidden><span class="telemetry-line"></span><span class="telemetry-line"></span><span class="telemetry-line"></span></div></div>

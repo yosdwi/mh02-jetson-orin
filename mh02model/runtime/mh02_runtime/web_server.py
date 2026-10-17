@@ -10,14 +10,17 @@ from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional
 
 import uvicorn
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.background import BackgroundTask
 
 from .models import AlertEvent, DatalogFile, Recording
+from .configuration import ConfigMutation, ConfigRestartRequest, ConfigRevision, ConfigSnapshot, ConfigStore, RuntimeConfig
+from .diagnostics import configure_logging, journal_entries, service_status
 from .media_verifier import verify_media
 from .store import RuntimeStore
+from .test_lab import TestReport, TestRunRequest, run_test
 
 
 WEB_ROOT = Path(__file__).resolve().parent / "web"
@@ -180,6 +183,26 @@ def enrich_alert(event: AlertEvent, recordings: List[Recording], datalogs: List[
 def create_app(database: Path, record_dir: Path, hls_dir: Path, datalog_dir: Path, clip_dir: Path) -> FastAPI:
     app = FastAPI(title="Vehicle Operations")
     store = RuntimeStore(database)
+    config_store = ConfigStore(Path(os.getenv("MH02_CONFIG_PATH", "/etc/mh02/config.json")))
+
+    def camera_config(camera_id: str):
+        return next((camera for camera in config_store.snapshot().config.cameras if camera.camera_id == camera_id), None)
+
+    def camera_record_dir(camera_id: str) -> Path:
+        if camera_id == "front":
+            return record_dir
+        camera = camera_config(camera_id)
+        if camera is None:
+            raise HTTPException(status_code=404, detail=f"camera {camera_id} is not configured")
+        return Path(camera.record_dir)
+
+    def require_admin(request: Request) -> Optional[JSONResponse]:
+        expected = os.getenv("MH02_ADMIN_TOKEN")
+        if not expected:
+            return JSONResponse(status_code=503, content={"detail": "admin token is not configured"})
+        if request.headers.get("x-mh02-admin-token") != expected:
+            return JSONResponse(status_code=403, content={"detail": "admin authorization required"})
+        return None
 
     @app.get("/api/aggregate")
     def latest_aggregate() -> object:
@@ -187,8 +210,8 @@ def create_app(database: Path, record_dir: Path, hls_dir: Path, datalog_dir: Pat
         return sample if sample is not None else JSONResponse(status_code=204, content=None)
 
     @app.get("/api/recordings", response_model=List[Recording])
-    def recordings(date: Optional[str] = None, hour: Optional[int] = None) -> List[Recording]:
-        items = list_recordings(record_dir)
+    def recordings(date: Optional[str] = None, hour: Optional[int] = None, camera: str = "front") -> List[Recording]:
+        items = list_recordings(camera_record_dir(camera))
         if date is None:
             return items
         selected = datetime.strptime(date, "%Y-%m-%d").date()
@@ -219,6 +242,119 @@ def create_app(database: Path, record_dir: Path, hls_dir: Path, datalog_dir: Pat
                 continue
             result.append(enrich_alert(event, recordings_all, datalogs_all))
         return result
+
+    @app.get("/api/cameras")
+    def cameras() -> List[Dict[str, Any]]:
+        result: List[Dict[str, Any]] = []
+        for camera in config_store.snapshot().config.cameras:
+            result.append(
+                {
+                    "camera_id": camera.camera_id,
+                    "role": camera.role,
+                    "rtsp_path": camera.rtsp_path,
+                    "hls_path": camera.hls_path,
+                    "live_hls_url": f"/live/{camera.hls_path}.m3u8",
+                    "device": camera.device,
+                    "device_present": Path(camera.device).exists(),
+                    "recording_enabled": camera.record_enabled,
+                    "inference_enabled": camera.inference_enabled,
+                },
+            )
+        return result
+
+    @app.get("/api/config/effective", response_model=ConfigSnapshot)
+    def effective_config() -> ConfigSnapshot:
+        snapshot = config_store.snapshot()
+        return snapshot.model_copy(update={"restart_required": ()})
+
+    @app.get("/api/config/history", response_model=List[ConfigRevision])
+    def config_history(request: Request) -> object:
+        denied = require_admin(request)
+        if denied is not None:
+            return denied
+        return config_store.history()
+
+    @app.post("/api/config/validate", response_model=RuntimeConfig)
+    def validate_config(request: Request, config: RuntimeConfig) -> object:
+        denied = require_admin(request)
+        if denied is not None:
+            return denied
+        return config_store.validate(config)
+
+    @app.post("/api/config/apply", response_model=ConfigSnapshot)
+    def apply_config(request: Request, mutation: ConfigMutation) -> object:
+        denied = require_admin(request)
+        if denied is not None:
+            return denied
+        return config_store.apply(mutation.config, "web", mutation.reason)
+
+    @app.post("/api/config/rollback/{revision}", response_model=ConfigSnapshot)
+    def rollback_config(revision: int, request: Request) -> object:
+        denied = require_admin(request)
+        if denied is not None:
+            return denied
+        return config_store.rollback(revision, "web")
+
+    @app.post("/api/config/restart")
+    def restart_config(request: Request, payload: ConfigRestartRequest) -> Dict[str, object]:
+        denied = require_admin(request)
+        if denied is not None:
+            return denied
+        restarted = config_store.restart(payload.services)
+        return {"status": "restarted", "services": restarted}
+
+    @app.post("/api/test-lab/run", response_model=TestReport)
+    def run_test_lab(request: TestRunRequest) -> TestReport:
+        report = run_test(request)
+        store.save_test_report(report.report_id, report.created_at_utc, report.model_dump_json())
+        return report
+
+    @app.get("/api/test-lab/reports", response_model=List[TestReport])
+    def test_lab_reports() -> List[TestReport]:
+        return [TestReport.model_validate_json(payload) for payload in store.test_reports()]
+
+    @app.get("/api/test-lab/reports/{report_id}", response_model=TestReport)
+    def test_lab_report(report_id: str) -> object:
+        for payload in store.test_reports(limit=200):
+            report = TestReport.model_validate_json(payload)
+            if report.report_id == report_id:
+                return report
+        return JSONResponse(status_code=404, content={"detail": "Test report not found"})
+
+    @app.get("/api/diagnostics/health")
+    def diagnostics_health() -> Dict[str, Any]:
+        service_names = (
+            "mh02-vlog.service",
+            "mh02-cabin.service",
+            "mh02-fatigue.service",
+            "mh02-gps.service",
+            "mh02-aggregate.service",
+            "mh02-alerts.service",
+            "mh02-web.service",
+        )
+        return {"services": [service_status(service) for service in service_names], "cameras": cameras()}
+
+    @app.get("/api/diagnostics/logs")
+    def diagnostics_logs(service: Optional[str] = None, query: Optional[str] = None, limit: int = 200) -> Dict[str, Any]:
+        return {"entries": journal_entries(service, query, limit), "retention": "24h query window"}
+
+    @app.get("/api/diagnostics/bundle")
+    def diagnostics_bundle() -> Response:
+        payload = {
+            "created_at_utc": datetime.now(timezone.utc).isoformat(),
+            "health": diagnostics_health(),
+            "config": config_store.snapshot().model_dump(mode="json"),
+            "logs": journal_entries(None, None, 200),
+        }
+        fd, temporary_path = tempfile.mkstemp(prefix="mh02-diagnostics-", suffix=".json")
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, separators=(",", ":"))
+        return FileResponse(
+            temporary_path,
+            media_type="application/json",
+            filename="mh02-diagnostics.json",
+            background=BackgroundTask(os.unlink, temporary_path),
+        )
 
     @app.get("/api/health")
     def health(date: Optional[str] = None) -> Dict[str, Any]:
@@ -251,8 +387,8 @@ def create_app(database: Path, record_dir: Path, hls_dir: Path, datalog_dir: Pat
         return {"date": selected_date.isoformat(), "hours": hours}
 
     @app.get("/recordings/{filename}")
-    def recording(filename: str, request: Request) -> Response:
-        path = record_dir / Path(filename).name
+    def recording(filename: str, request: Request, camera: str = "front") -> Response:
+        path = camera_record_dir(camera) / Path(filename).name
         if not path.exists():
             return JSONResponse(status_code=404, content={"detail": "Recording not found"})
         if path.suffix.lower() != ".mp4":
@@ -260,8 +396,8 @@ def create_app(database: Path, record_dir: Path, hls_dir: Path, datalog_dir: Pat
         return recording_response(path, request)
 
     @app.get("/recordings/{filename}/bundle")
-    def recording_bundle(filename: str) -> Response:
-        return bundle_response(record_dir, filename)
+    def recording_bundle(filename: str, camera: str = "front") -> Response:
+        return bundle_response(camera_record_dir(camera), filename)
 
     @app.get("/datalog/{filename}")
     def datalog(filename: str) -> FileResponse:
@@ -298,15 +434,18 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--hls-dir", type=Path, default=Path("/var/lib/mh02/hls"))
     result.add_argument("--datalog-dir", type=Path, default=Path("/var/lib/mh02/datalog"))
     result.add_argument("--clip-dir", type=Path, default=Path("/var/lib/mh02/recordings/alerts"))
+    result.add_argument("--config-path", type=Path, default=Path("/etc/mh02/config.json"))
     result.add_argument("--host", default="0.0.0.0")
     result.add_argument("--port", type=int, default=8080)
     return result
 
 
 def main() -> int:
+    configure_logging("mh02.web")
     args = parser().parse_args()
+    os.environ["MH02_CONFIG_PATH"] = str(args.config_path)
     app = create_app(Path(args.database), args.record_dir, args.hls_dir, args.datalog_dir, args.clip_dir)
-    uvicorn.run(app, host=args.host, port=args.port, log_level="info")
+    uvicorn.run(app, host=args.host, port=args.port, log_level="info", log_config=None)
     return 0
 
 

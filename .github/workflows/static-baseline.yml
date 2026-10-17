@@ -18,6 +18,8 @@ jobs:
         run: PYTHONPATH=mh02model/runtime python -m pytest -q
       - name: Python syntax check
         run: python -m compileall -q mh02model/apps/mh02 mh02model/runtime/mh02_runtime
+      - name: Web JavaScript syntax check
+        run: node --check mh02model/runtime/mh02_runtime/web/app.js
       - name: Guard against accidental camera credentials in published source
         run: |
           python - <<'PY_CHECK'

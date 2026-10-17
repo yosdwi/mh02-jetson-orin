@@ -19,6 +19,8 @@ gi.require_version("GLib", "2.0")
 from gi.repository import GLib, Gst
 
 from .models import AggregateSample
+from .configuration import ConfigStore
+from .diagnostics import configure_logging
 from .evidence import render_vtt, samples_for_segment, vtt_clock_source
 from .media_verifier import verify_media
 from .store import RuntimeStore, utc_now
@@ -265,15 +267,33 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--bitrate", type=int, default=4_000_000)
     result.add_argument("--segment-seconds", type=float, default=600)
     result.add_argument("--rtsp-url", default="rtsp://127.0.0.1:8554/front")
+    result.add_argument("--config-path", type=Path)
     return result
 
 
+def apply_runtime_config(args: argparse.Namespace) -> argparse.Namespace:
+    if args.config_path is None:
+        return args
+    config = ConfigStore(args.config_path).snapshot().config
+    camera = next(camera for camera in config.cameras if camera.camera_id == args.camera_id)
+    if camera.source_kind != "device":
+        raise ValueError(f"camera {camera.camera_id} is not configured as a device source")
+    args.device = camera.device
+    args.record_dir = Path(camera.record_dir)
+    args.width = camera.width
+    args.height = camera.height
+    args.framerate = camera.framerate
+    args.segment_seconds = config.recording.segment_seconds
+    args.rtsp_url = f"rtsp://127.0.0.1:8554/{camera.rtsp_path}"
+    return args
+
+
 def main() -> int:
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    configure_logging("mh02.vlog")
     stop = Event()
     signal.signal(signal.SIGTERM, lambda _signum, _frame: stop.set())
     signal.signal(signal.SIGINT, lambda _signum, _frame: stop.set())
-    run(parser().parse_args(), stop)
+    run(apply_runtime_config(parser().parse_args()), stop)
     return 0
 
 

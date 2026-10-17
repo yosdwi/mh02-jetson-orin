@@ -4,32 +4,45 @@ const liveMessage = $('live-message');
 const archivePlayer = $('archive-player');
 const archiveMessage = $('archive-message');
 const archiveOverlay = $('archive-overlay');
-const state = { date: '', hour: new Date().getHours(), recordings: [], datalogs: [], alerts: [], health: [] };
+const state = { date: '', hour: new Date().getHours(), archiveCamera: 'front', recordings: [], datalogs: [], alerts: [], health: [], cameras: [], config: null };
+let livePeer = null;
+let liveHls = null;
+let pendingRestarts = [];
 
 function valueOrDash(value) { return value === null || value === undefined || value === '' ? '—' : value; }
 function setMetric(id, value, alert) { const node = $(id); node.textContent = valueOrDash(value); node.classList.toggle('alert', Boolean(alert)); }
 function localDate(date = new Date()) { return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`; }
 function hourText(hour) { return `${String(hour).padStart(2, '0')}:00`; }
 
-async function setupHlsFallback() {
-  const source = '/live/front.m3u8';
+function closeLiveSources() {
+  if (livePeer) { livePeer.close(); livePeer = null; }
+  if (liveHls) { liveHls.destroy(); liveHls = null; }
+  livePlayer.srcObject = null;
+  livePlayer.removeAttribute('src');
+}
+
+async function setupHlsFallback(camera) {
+  const source = camera.live_hls_url;
   if (livePlayer.canPlayType('application/vnd.apple.mpegurl')) {
     livePlayer.src = source;
     liveMessage.hidden = true;
     return;
   }
   if (window.Hls && window.Hls.isSupported()) {
-    const hls = new window.Hls({ lowLatencyMode: true });
-    hls.loadSource(source);
-    hls.attachMedia(livePlayer);
-    hls.on(window.Hls.Events.MANIFEST_PARSED, () => { liveMessage.hidden = true; });
+    liveHls = new window.Hls({ lowLatencyMode: true });
+    liveHls.loadSource(source);
+    liveHls.attachMedia(livePlayer);
+    liveHls.on(window.Hls.Events.MANIFEST_PARSED, () => { liveMessage.hidden = true; });
     return;
   }
   liveMessage.textContent = 'Live stream unavailable';
 }
 
-async function setupLive() {
+async function setupLive(camera) {
+  closeLiveSources();
+  liveMessage.textContent = `Connecting to ${camera.camera_id} camera`;
   const peer = new RTCPeerConnection();
+  livePeer = peer;
   peer.addTransceiver('video', { direction: 'recvonly' });
   peer.ontrack = (event) => { livePlayer.srcObject = event.streams[0]; liveMessage.hidden = true; };
   await peer.setLocalDescription(await peer.createOffer());
@@ -37,10 +50,37 @@ async function setupLive() {
     if (peer.iceGatheringState === 'complete') resolve();
     else peer.addEventListener('icegatheringstatechange', () => { if (peer.iceGatheringState === 'complete') resolve(); });
   });
-  const endpoint = `${location.protocol}//${location.hostname}:8889/front/whep`;
+  const endpoint = `${location.protocol}//${location.hostname}:8889/${camera.rtsp_path}/whep`;
   const response = await fetch(endpoint, { method: 'POST', headers: { 'Content-Type': 'application/sdp' }, body: peer.localDescription.sdp });
   if (!response.ok) throw new Error(`WHEP ${response.status}`);
   await peer.setRemoteDescription({ type: 'answer', sdp: await response.text() });
+}
+
+async function loadLiveCamera(cameraId) {
+  const camera = state.cameras.find((item) => item.camera_id === cameraId);
+  if (!camera) return;
+  $('live-camera').value = camera.camera_id;
+  try {
+    await setupLive(camera);
+  } catch (_error) {
+    await setupHlsFallback(camera);
+  }
+}
+
+async function refreshCameras() {
+  const response = await fetch('/api/cameras', { cache: 'no-store' });
+  if (!response.ok) throw new Error(`Camera API ${response.status}`);
+  state.cameras = await response.json();
+  const selector = $('live-camera');
+  selector.replaceChildren();
+  state.cameras.forEach((camera) => {
+    const option = document.createElement('option');
+    option.value = camera.camera_id;
+    option.textContent = `${camera.camera_id} · ${camera.role}${camera.device_present ? '' : ' · unavailable'}`;
+    selector.appendChild(option);
+  });
+  selector.addEventListener('change', () => loadLiveCamera(selector.value));
+  await loadLiveCamera(state.cameras[0] && state.cameras[0].camera_id);
 }
 
 function updateAggregate(sample) {
@@ -177,10 +217,10 @@ function selectClip(index, seekToUtc = null) {
   const item = state.recordings[index];
   if (!item) return;
   loadArchiveVideo(
-    `/recordings/${encodeURIComponent(item.filename)}`,
-    item.subtitle_filename ? `/recordings/${encodeURIComponent(item.subtitle_filename)}` : null,
+    `/recordings/${encodeURIComponent(item.filename)}?camera=${encodeURIComponent(state.archiveCamera)}`,
+    item.subtitle_filename ? `/recordings/${encodeURIComponent(item.subtitle_filename)}?camera=${encodeURIComponent(state.archiveCamera)}` : null,
     recordingTitle(item),
-    `/recordings/${encodeURIComponent(item.filename)}/bundle`,
+    `/recordings/${encodeURIComponent(item.filename)}/bundle?camera=${encodeURIComponent(state.archiveCamera)}`,
     `${item.filename.replace(/\.mp4$/i, '')}.zip`,
     seekToUtc,
     item.started_at_utc,
@@ -229,7 +269,7 @@ function datalogForHour(hour) {
 async function loadArchiveHour(hour) {
   state.hour = hour;
   document.querySelectorAll('.health-hour').forEach((button) => button.classList.toggle('selected', Number(button.textContent) === hour));
-  const response = await fetch(`/api/recordings?date=${encodeURIComponent(state.date)}&hour=${hour}`, { cache: 'no-store' });
+  const response = await fetch(`/api/recordings?date=${encodeURIComponent(state.date)}&hour=${hour}&camera=${encodeURIComponent(state.archiveCamera)}`, { cache: 'no-store' });
   state.recordings = await response.json();
   drawRecordings();
   const datalog = datalogForHour(hour);
@@ -276,7 +316,7 @@ function alertDuration(alert) {
 async function openAlert(alert) {
   state.date = localDate(new Date(alert.started_at_utc));
   $('archive-date').value = state.date;
-  const response = await fetch(`/api/recordings?date=${encodeURIComponent(state.date)}`, { cache: 'no-store' });
+  const response = await fetch(`/api/recordings?date=${encodeURIComponent(state.date)}&camera=front`, { cache: 'no-store' });
   state.recordings = await response.json();
   const index = state.recordings.findIndex((item) => alert.recording_filenames.includes(item.filename));
   const selected = index >= 0 ? index : 0;
@@ -343,7 +383,7 @@ function drawAlerts() {
       alert.recording_filenames.forEach((filename, index) => {
         const video = document.createElement('a');
         video.className = 'button secondary';
-        video.href = `/recordings/${encodeURIComponent(filename)}/bundle`;
+        video.href = `/recordings/${encodeURIComponent(filename)}/bundle?camera=front`;
         video.download = `${filename.replace(/\.mp4$/i, '')}.zip`;
         video.textContent = alert.recording_filenames.length === 1 ? 'Download video bundle' : `Video bundle ${index + 1}`;
         meta.appendChild(video);
@@ -388,11 +428,131 @@ async function refreshArchive() {
   await loadArchiveHour(state.hour);
 }
 
+function adminHeaders() {
+  const token = $('admin-token').value.trim();
+  return token ? { 'x-mh02-admin-token': token } : {};
+}
+
+function renderTestReport(report) {
+  const panel = $('test-report');
+  panel.className = `test-report report-${report.status.toLowerCase()}`;
+  panel.replaceChildren();
+  const heading = document.createElement('strong');
+  heading.textContent = `${report.label} · ${report.scenario.replace('_', ' ')} · ${report.status}`;
+  const lifecycle = document.createElement('p');
+  lifecycle.textContent = `Lifecycle: ${report.lifecycle.join(' → ')}`;
+  const evidence = document.createElement('p');
+  evidence.textContent = `Evidence: ${report.video_status}${report.evidence_ready_at_offset_seconds === null ? '' : ` · ready at ${report.evidence_ready_at_offset_seconds.toFixed(1)}s`}`;
+  const diagnostics = document.createElement('p');
+  diagnostics.textContent = report.diagnostics.join(' ');
+  const table = document.createElement('div');
+  table.className = 'metric-table';
+  report.metrics.slice(-6).forEach((metric) => {
+    const row = document.createElement('span');
+    row.textContent = `${metric.offset_seconds.toFixed(1)}s · EAR ${metric.ear === null ? '—' : metric.ear.toFixed(2)} · MAR ${metric.mar === null ? '—' : metric.mar.toFixed(2)} · ${metric.closed_eyes ? 'eyes closed' : metric.yawning ? 'yawn' : 'normal'}`;
+    table.appendChild(row);
+  });
+  panel.append(heading, lifecycle, evidence, diagnostics, table);
+}
+
+async function runTestSession() {
+  const button = $('run-test');
+  button.disabled = true;
+  try {
+    const response = await fetch('/api/test-lab/run', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ scenario: $('test-scenario').value, source: $('test-source').value }),
+    });
+    const report = await response.json();
+    if (!response.ok) throw new Error(report.detail || `Test API ${response.status}`);
+    renderTestReport(report);
+  } catch (error) {
+    const panel = $('test-report');
+    panel.className = 'test-report report-fail';
+    panel.textContent = error.message;
+  } finally {
+    button.disabled = false;
+  }
+}
+
+async function refreshDiagnostics() {
+  const healthResponse = await fetch('/api/diagnostics/health', { cache: 'no-store' });
+  const health = await healthResponse.json();
+  const healthy = health.services.filter((service) => service.status === 'healthy').length;
+  $('diagnostics-summary').textContent = `${healthy}/${health.services.length} services active · ${health.cameras.filter((camera) => camera.device_present).length}/${health.cameras.length} camera devices present`;
+  const query = encodeURIComponent($('log-query').value.trim());
+  const logsResponse = await fetch(`/api/diagnostics/logs?limit=80${query ? `&query=${query}` : ''}`, { cache: 'no-store' });
+  const logs = await logsResponse.json();
+  $('diagnostics-log').textContent = (logs.entries || []).map((entry) => JSON.stringify(entry)).join('\n') || 'No matching journal entries in the 24-hour window.';
+}
+
+async function loadConfiguration() {
+  const response = await fetch('/api/config/effective', { cache: 'no-store' });
+  const snapshot = await response.json();
+  if (!response.ok) throw new Error(snapshot.detail || `Config API ${response.status}`);
+  state.config = snapshot.config;
+  $('config-editor').value = JSON.stringify(snapshot.config, null, 2);
+  $('config-revision').textContent = `Revision ${snapshot.config.revision} · ${snapshot.source}`;
+}
+
+async function loadConfigurationHistory() {
+  const response = await fetch('/api/config/history', { headers: adminHeaders(), cache: 'no-store' });
+  const payload = await response.json();
+  if (!response.ok) throw new Error(payload.detail || `History API ${response.status}`);
+  const selector = $('config-history');
+  selector.replaceChildren(new Option('History', ''));
+  payload.forEach((item) => selector.appendChild(new Option(`r${item.revision} · ${item.reason}`, item.revision)));
+}
+
+async function validateConfiguration() {
+  const response = await fetch('/api/config/validate', { method: 'POST', headers: { 'Content-Type': 'application/json', ...adminHeaders() }, body: $('config-editor').value });
+  const payload = await response.json();
+  $('config-message').textContent = response.ok ? `Valid revision ${payload.revision}.` : payload.detail || `Validation failed (${response.status}).`;
+}
+
+async function applyConfiguration() {
+  const response = await fetch('/api/config/apply', { method: 'POST', headers: { 'Content-Type': 'application/json', ...adminHeaders() }, body: JSON.stringify({ config: JSON.parse($('config-editor').value), reason: 'web control plane update' }) });
+  const payload = await response.json();
+  pendingRestarts = response.ok ? payload.restart_required : [];
+  $('restart-config').disabled = pendingRestarts.length === 0;
+  $('config-message').textContent = response.ok ? `Applied revision ${payload.config.revision}. Restart required: ${pendingRestarts.join(', ') || 'none'}.` : payload.detail || `Apply failed (${response.status}).`;
+  if (response.ok) { await loadConfiguration(); await loadConfigurationHistory(); }
+}
+
+async function restartConfiguration() {
+  const response = await fetch('/api/config/restart', { method: 'POST', headers: { 'Content-Type': 'application/json', ...adminHeaders() }, body: JSON.stringify({ services: pendingRestarts }) });
+  const payload = await response.json();
+  $('config-message').textContent = response.ok ? `Restarted ${payload.services.join(', ')}.` : payload.detail || `Restart failed (${response.status}).`;
+  if (response.ok) { pendingRestarts = []; $('restart-config').disabled = true; }
+}
+
+async function rollbackConfiguration() {
+  const revision = $('config-history').value;
+  if (!revision) { $('config-message').textContent = 'Select a history revision first.'; return; }
+  const response = await fetch(`/api/config/rollback/${encodeURIComponent(revision)}`, { method: 'POST', headers: adminHeaders() });
+  const payload = await response.json();
+  $('config-message').textContent = response.ok ? `Rolled back into revision ${payload.config.revision}. Restart required: ${payload.restart_required.join(', ') || 'none'}.` : payload.detail || `Rollback failed (${response.status}).`;
+  if (response.ok) { await loadConfiguration(); await loadConfigurationHistory(); }
+}
+
 state.date = localDate();
 $('archive-date').value = state.date;
 $('archive-date').addEventListener('change', async (event) => { state.date = event.target.value; state.hour = 0; await refreshArchive(); });
-setupLive().catch(() => setupHlsFallback());
+$('archive-camera').addEventListener('change', async (event) => { state.archiveCamera = event.target.value; state.hour = 0; await refreshArchive(); });
+$('run-test').addEventListener('click', runTestSession);
+$('refresh-diagnostics').addEventListener('click', () => refreshDiagnostics().catch((error) => { $('diagnostics-summary').textContent = error.message; }));
+$('log-query').addEventListener('change', () => refreshDiagnostics().catch(() => {}));
+$('download-diagnostics').addEventListener('click', () => { window.location.href = '/api/diagnostics/bundle'; });
+$('load-config').addEventListener('click', () => loadConfiguration().then(loadConfigurationHistory).catch((error) => { $('config-message').textContent = error.message; }));
+$('validate-config').addEventListener('click', () => validateConfiguration().catch((error) => { $('config-message').textContent = error.message; }));
+$('apply-config').addEventListener('click', () => applyConfiguration().catch((error) => { $('config-message').textContent = error.message; }));
+$('rollback-config').addEventListener('click', () => rollbackConfiguration().catch((error) => { $('config-message').textContent = error.message; }));
+$('restart-config').addEventListener('click', () => restartConfiguration().catch((error) => { $('config-message').textContent = error.message; }));
+refreshCameras().catch(() => { liveMessage.textContent = 'Camera inventory unavailable'; });
 refreshAggregate();
 refreshArchive();
+refreshDiagnostics().catch(() => { $('diagnostics-summary').textContent = 'Diagnostics unavailable'; });
+loadConfiguration().catch(() => {});
 window.setInterval(refreshAggregate, 1000);
 window.setInterval(refreshArchive, 15000);

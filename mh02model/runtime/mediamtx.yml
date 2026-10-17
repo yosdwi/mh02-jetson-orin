@@ -6,5 +6,5 @@ webrtcAllowOrigins: ['*']
 paths:
   front:
     source: publisher
-  all_others:
+  cabin:
     source: publisher

@@ -11,6 +11,8 @@ from threading import Event
 from typing import Tuple
 
 from .models import FatigueState
+from .configuration import ConfigStore
+from .diagnostics import configure_logging
 from .store import RuntimeStore
 
 
@@ -83,15 +85,25 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--interval", type=float, default=0.25)
     result.add_argument("--roi", default="300,100,1200,700")
     result.add_argument("--face-config", default="0.15,0.60,-70,70,-50,70")
+    result.add_argument("--config-path", type=Path)
     return result
 
 
+def apply_runtime_config(args: argparse.Namespace) -> argparse.Namespace:
+    if args.config_path is None:
+        return args
+    config = ConfigStore(args.config_path).snapshot().config
+    args.camera_id = config.fatigue.camera_id
+    args.source = config.fatigue.source
+    return args
+
+
 def main() -> int:
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    configure_logging("mh02.fatigue")
     stop = Event()
     signal.signal(signal.SIGTERM, lambda _signum, _frame: stop.set())
     signal.signal(signal.SIGINT, lambda _signum, _frame: stop.set())
-    run(parser().parse_args(), stop)
+    run(apply_runtime_config(parser().parse_args()), stop)
     return 0
 
 
