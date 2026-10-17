@@ -99,7 +99,6 @@ def pipeline_description(config: CabinAnnotationConfig) -> str:
         f"frames. ! queue max-size-buffers=2 leaky=downstream ! nvdsosd name=cabin-osd process-mode=1 display-bbox=0 display-text=1 ! "
         "nvvideoconvert ! video/x-raw(memory:NVMM),format=NV12 ! "
         f"nvv4l2h264enc bitrate={config.bitrate} iframeinterval=30 ! h264parse config-interval=1 ! "
-        "rtph264pay pt=96 config-interval=1 ! "
         f'rtspclientsink location="{config.annotated_rtsp_url}" protocols=tcp'
     )
 

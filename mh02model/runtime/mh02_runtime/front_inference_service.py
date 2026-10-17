@@ -214,7 +214,7 @@ def pipeline_description(config: InferenceConfig) -> str:
         f'nvdsosd name=front-osd process-mode={config.osd_process_mode} display-bbox=1 display-text=1 ! '
         "nvvideoconvert ! video/x-raw(memory:NVMM),format=NV12 ! "
         f"nvv4l2h264enc bitrate={config.annotated_bitrate} iframeinterval=30 ! "
-        "h264parse config-interval=1 ! rtph264pay pt=96 config-interval=1 ! "
+        "h264parse config-interval=1 ! "
         f'rtspclientsink location="{config.annotated_rtsp_url}" protocols=tcp'
         if config.annotated_stream_enabled
         else "fakesink name=front-sink sync=false"
