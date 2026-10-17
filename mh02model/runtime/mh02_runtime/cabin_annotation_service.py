@@ -74,7 +74,16 @@ def utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def health(config: CabinAnnotationConfig, status: str, frames: int, observations: int, diagnostics: list[str]) -> InferenceHealth:
+def health(
+    config: CabinAnnotationConfig,
+    status: str,
+    frames: int,
+    observations: int,
+    diagnostics: list[str],
+    joiner: Optional[FrameResultJoiner] = None,
+    identity: Optional[FrameIdentityManager] = None,
+) -> InferenceHealth:
+    metrics = joiner.metrics if joiner is not None else None
     return InferenceHealth(
         status=status,
         camera_id="cabin",
@@ -88,6 +97,13 @@ def health(config: CabinAnnotationConfig, status: str, frames: int, observations
         diagnostics=diagnostics,
         annotated_stream_enabled=config.enabled,
         annotated_publisher=config.annotated_rtsp_url if config.enabled else "disabled",
+        exact_frame_matches=metrics.exact_matches if metrics else 0,
+        expired_frame_results=metrics.expired_frames if metrics else 0,
+        unmatched_observations=metrics.unmatched_results if metrics else 0,
+        late_observations=metrics.late_results if metrics else 0,
+        duplicate_pts=identity.duplicate_pts if identity else 0,
+        pts_discontinuities=identity.discontinuities if identity else 0,
+        missing_pts=identity.missing_pts if identity else 0,
     )
 
 
@@ -334,7 +350,7 @@ def run(config: CabinAnnotationConfig, identity_path: Path, stop: Event) -> int:
         pipeline.set_state(Gst.State.NULL)
         worker.join(timeout=2)
         composer.stop()
-        writer.health(health(config, "stopped", frames, observations, ["cabin annotation pipeline stopped"]))
+        writer.health(health(config, "stopped", frames, observations, ["cabin annotation pipeline stopped"], joiner, identity))
     return 0
 
 

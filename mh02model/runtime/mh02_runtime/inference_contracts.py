@@ -93,6 +93,13 @@ class InferenceHealth(BaseModel):
     annotated_stream_enabled: bool = False
     annotated_publisher: str = "disabled"
     unmatched_latency_frames: int = Field(default=0, ge=0)
+    exact_frame_matches: int = Field(default=0, ge=0)
+    expired_frame_results: int = Field(default=0, ge=0)
+    unmatched_observations: int = Field(default=0, ge=0)
+    late_observations: int = Field(default=0, ge=0)
+    duplicate_pts: int = Field(default=0, ge=0)
+    pts_discontinuities: int = Field(default=0, ge=0)
+    missing_pts: int = Field(default=0, ge=0)
 
 
 class InferenceCapabilities(BaseModel):

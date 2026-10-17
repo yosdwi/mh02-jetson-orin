@@ -298,6 +298,9 @@ class InferenceRun:
             annotated_stream_enabled=self.config.annotated_stream_enabled,
             annotated_publisher=self.config.annotated_rtsp_url if self.config.annotated_stream_enabled else "disabled",
             unmatched_latency_frames=self.unmatched_latency_frames,
+            duplicate_pts=self.identity.duplicate_pts,
+            pts_discontinuities=self.identity.discontinuities,
+            missing_pts=self.identity.missing_pts,
         )
 
     def write_health(self, status: str, diagnostics: Optional[List[str]] = None, force: bool = False) -> None:
