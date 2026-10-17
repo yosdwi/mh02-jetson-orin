@@ -322,10 +322,26 @@ def run_pipeline(config: InferenceConfig, output_path: Path, health_path: Path, 
             ),
         )
         return 3
-    if not Path(config.model_config_path).exists():
-        raise FileNotFoundError(config.model_config_path)
-    if not Path(config.tracker_config_path).exists():
-        raise FileNotFoundError(config.tracker_config_path)
+    missing_configuration = [
+        path
+        for path in (config.model_config_path, config.tracker_lib_path, config.tracker_config_path)
+        if not Path(path).exists()
+    ]
+    if missing_configuration:
+        writer.health(
+            InferenceHealth(
+                status="blocked",
+                source_kind=config.source_kind,
+                source=config.source,
+                model_name=config.front_model,
+                model_version=config.front_model_version,
+                model_digest_sha256=file_digest(model_path),
+                deepstream_version=available.installed_deepstream_version,
+                last_update_utc=utc_now(),
+                diagnostics=[f"DeepStream configuration asset is missing: {path}" for path in missing_configuration],
+            ),
+        )
+        return 2
     try:
         import gi
 

@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 import sys
+from threading import Event
 from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parents[1] / "mh02model" / "runtime"))
 
-from mh02_runtime.front_inference_service import validation_report
-from mh02_runtime.inference_contracts import BoundingBox, DetectionObservation, InferenceHealth
+from mh02_runtime.configuration import default_config
+from mh02_runtime.front_inference_service import run_pipeline, validation_report
+from mh02_runtime.inference_contracts import BoundingBox, DetectionObservation, InferenceCapabilities, InferenceHealth
 from mh02_runtime.warning_engine import AdvisoryPolicy, candidates_for
 
 
@@ -68,3 +70,26 @@ def test_validation_report_requires_frames_from_running_inference() -> None:
 
     assert report.status == "BLOCKED"
     assert report.frames == 0
+
+
+def test_missing_deepstream_assets_write_blocked_health(tmp_path: Path, monkeypatch) -> None:
+    engine = tmp_path / "model.engine"
+    engine.write_bytes(b"engine")
+    config = default_config().inference.model_copy(
+        update={
+            "enabled": True,
+            "engine_path": str(engine),
+            "model_config_path": str(tmp_path / "missing-pgie.txt"),
+            "tracker_lib_path": str(tmp_path / "missing-tracker.so"),
+            "tracker_config_path": str(tmp_path / "missing-tracker.yml"),
+        },
+    )
+    monkeypatch.setattr(
+        "mh02_runtime.front_inference_service.capabilities",
+        lambda: InferenceCapabilities(deepstream_available=True, nvinfer_available=True, nvtracker_available=True, pyds_available=True),
+    )
+
+    assert run_pipeline(config, tmp_path / "events.ndjson", tmp_path / "health.json", Event()) == 2
+    health = InferenceHealth.model_validate_json((tmp_path / "health.json").read_text())
+    assert health.status == "blocked"
+    assert "configuration asset is missing" in health.diagnostics[0]
