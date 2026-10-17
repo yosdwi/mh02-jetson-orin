@@ -15,7 +15,7 @@ from fastapi.responses import FileResponse, JSONResponse, Response, StreamingRes
 from fastapi.staticfiles import StaticFiles
 from starlette.background import BackgroundTask
 
-from .models import AlertEvent, DatalogFile, Recording
+from .models import AlertEvent, DatalogFile, GpsHealth, Recording
 from .configuration import ConfigMutation, ConfigRestartRequest, ConfigRevision, ConfigSnapshot, ConfigStore, RuntimeConfig
 from .diagnostics import configure_logging, journal_entries, service_status
 from .front_inference_service import capabilities, read_events, read_health, validation_report
@@ -248,7 +248,13 @@ def create_app(database: Path, record_dir: Path, hls_dir: Path, datalog_dir: Pat
     @app.get("/api/cameras")
     def cameras() -> List[Dict[str, Any]]:
         result: List[Dict[str, Any]] = []
-        for camera in config_store.snapshot().config.cameras:
+        active_config = config_store.snapshot().config
+        health_paths = {
+            "front": Path(active_config.inference.health_path),
+            "cabin": Path(active_config.cabin_annotation.health_path),
+        }
+        for camera in active_config.cameras:
+            annotated_health = read_health(health_paths[camera.camera_id])
             result.append(
                 {
                     "camera_id": camera.camera_id,
@@ -256,6 +262,9 @@ def create_app(database: Path, record_dir: Path, hls_dir: Path, datalog_dir: Pat
                     "rtsp_path": camera.rtsp_path,
                     "hls_path": camera.hls_path,
                     "live_hls_url": f"/live/{camera.hls_path}.m3u8",
+                    "annotated_rtsp_path": f"{camera.rtsp_path}-annotated",
+                    "annotated_hls_url": f"/live/{camera.hls_path}-annotated.m3u8",
+                    "annotated_available": annotated_health is not None and annotated_health.status == "running",
                     "device": camera.device,
                     "device_present": Path(camera.device).exists(),
                     "recording_enabled": camera.record_enabled,
@@ -333,8 +342,23 @@ def create_app(database: Path, record_dir: Path, hls_dir: Path, datalog_dir: Pat
             "mh02-aggregate.service",
             "mh02-alerts.service",
             "mh02-web.service",
+            "mh02-cabin-annotation.service",
         )
-        return {"services": [service_status(service) for service in service_names], "cameras": cameras()}
+        gps = store.latest_gps_health()
+        active_config = config_store.snapshot().config
+        return {
+            "services": [service_status(service) for service in service_names],
+            "cameras": cameras(),
+            "gps": gps,
+            "annotated_streams": {
+                "front": read_health(Path(active_config.inference.health_path)),
+                "cabin": read_health(Path(active_config.cabin_annotation.health_path)),
+            },
+        }
+
+    @app.get("/api/gps/health", response_model=Optional[GpsHealth])
+    def gps_health() -> Optional[GpsHealth]:
+        return store.latest_gps_health()
 
     @app.get("/api/diagnostics/logs")
     def diagnostics_logs(service: Optional[str] = None, query: Optional[str] = None, limit: int = 200) -> Dict[str, Any]:

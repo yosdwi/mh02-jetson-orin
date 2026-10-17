@@ -21,6 +21,8 @@ from pydantic import BaseModel, ValidationError
 from .configuration import ConfigStore, InferenceConfig
 from .diagnostics import configure_logging
 from .inference_contracts import BoundingBox, DetectionObservation, FrontValidationReport, InferenceCapabilities, InferenceHealth
+from .overlay_composer import OverlayComposer, identity_values
+from .store import RuntimeStore
 from .warning_engine import AdvisoryPolicy, WarningCandidate, candidates_for
 
 
@@ -66,6 +68,8 @@ def capabilities() -> InferenceCapabilities:
     deepstream = plugin_available("nvstreammux")
     nvinfer = plugin_available("nvinfer")
     nvtracker = plugin_available("nvtracker")
+    nvdsosd = plugin_available("nvdsosd")
+    annotated_encoder = all(plugin_available(name) for name in ("nvv4l2h264enc", "rtspclientsink"))
     pyds = importlib.util.find_spec("pyds") is not None
     if not deepstream:
         diagnostics.append("nvstreammux GStreamer plugin is unavailable")
@@ -75,11 +79,17 @@ def capabilities() -> InferenceCapabilities:
         diagnostics.append("nvtracker GStreamer plugin is unavailable")
     if not pyds:
         diagnostics.append("DeepStream Python bindings pyds are unavailable")
+    if not nvdsosd:
+        diagnostics.append("nvdsosd GStreamer plugin is unavailable")
+    if not annotated_encoder:
+        diagnostics.append("annotated NVIDIA encoder or RTSP publisher is unavailable")
     return InferenceCapabilities(
         deepstream_available=deepstream,
         nvinfer_available=nvinfer,
         nvtracker_available=nvtracker,
         pyds_available=pyds,
+        nvdsosd_available=nvdsosd,
+        annotated_encoder_available=annotated_encoder,
         installed_deepstream_version=installed_version("deepstream-6.2"),
         tensor_rt_version=installed_version("tensorrt"),
         diagnostics=tuple(diagnostics),
@@ -200,12 +210,21 @@ def pipeline_description(config: InferenceConfig) -> str:
             "demux.video_0 ! queue ! h264parse ! nvv4l2decoder ! queue ! mux.sink_0"
         )
         live_source = "false"
+    annotated_sink = (
+        f'nvdsosd name=front-osd process-mode={config.osd_process_mode} display-bbox=1 display-text=1 ! '
+        "nvvideoconvert ! video/x-raw(memory:NVMM),format=NV12 ! "
+        f"nvv4l2h264enc bitrate={config.annotated_bitrate} iframeinterval=30 ! "
+        "h264parse config-interval=1 ! rtph264pay pt=96 config-interval=1 ! "
+        f'rtspclientsink location="{config.annotated_rtsp_url}" protocols=tcp'
+        if config.annotated_stream_enabled
+        else "fakesink name=front-sink sync=false"
+    )
     return (
         f"{source} nvstreammux name=mux batch-size=1 width=1920 height=1080 "
         f"live-source={live_source} batched-push-timeout=40000 ! "
         f'nvinfer name=front-pgie config-file-path="{config.model_config_path}" ! '
         f'nvtracker name=front-tracker ll-lib-file="{config.tracker_lib_path}" '
-        f'll-config-file="{config.tracker_config_path}" ! fakesink name=front-sink sync=false'
+        f'll-config-file="{config.tracker_config_path}" ! {annotated_sink}'
     )
 
 
@@ -223,6 +242,7 @@ class InferenceRun:
         self.latencies: List[float] = []
         self.last_media_pts_ns: Optional[int] = None
         self.last_health_write = 0.0
+        self.stream_generation = uuid.uuid4().hex
 
     def health(self, status: str, diagnostics: Optional[List[str]] = None) -> InferenceHealth:
         elapsed = max(0.001, time.monotonic() - self.started_monotonic)
@@ -246,6 +266,8 @@ class InferenceRun:
             last_media_pts_ns=self.last_media_pts_ns,
             last_update_utc=utc_now(),
             diagnostics=diagnostics or [],
+            annotated_stream_enabled=self.config.annotated_stream_enabled,
+            annotated_publisher=self.config.annotated_rtsp_url if self.config.annotated_stream_enabled else "disabled",
         )
 
     def write_health(self, status: str, diagnostics: Optional[List[str]] = None, force: bool = False) -> None:
@@ -326,6 +348,21 @@ def run_pipeline(config: InferenceConfig, output_path: Path, health_path: Path, 
             ),
         )
         return 3
+    if config.annotated_stream_enabled and not all(plugin_available(name) for name in ("nvdsosd", "nvvideoconvert", "nvv4l2h264enc", "rtspclientsink")):
+        writer.health(
+            InferenceHealth(
+                status="blocked",
+                source_kind=config.source_kind,
+                source=config.source,
+                model_name=config.front_model,
+                model_version=config.front_model_version,
+                model_digest_sha256=file_digest(model_path),
+                deepstream_version=available.installed_deepstream_version,
+                last_update_utc=utc_now(),
+                diagnostics=["annotated stream requires nvdsosd, nvvideoconvert, nvv4l2h264enc and rtspclientsink"],
+            ),
+        )
+        return 3
     missing_configuration = [
         path
         for path in (config.model_config_path, config.tracker_lib_path, config.tracker_config_path)
@@ -372,8 +409,24 @@ def run_pipeline(config: InferenceConfig, output_path: Path, health_path: Path, 
     pipeline = Gst.parse_launch(pipeline_description(config))
     mux = pipeline.get_by_name("mux")
     tracker = pipeline.get_by_name("front-tracker")
+    osd = pipeline.get_by_name("front-osd")
     if mux is None or tracker is None:
         raise RuntimeError("DeepStream pipeline did not create nvstreammux and nvtracker")
+    if config.annotated_stream_enabled and osd is None:
+        raise RuntimeError("Annotated DeepStream pipeline did not create nvdsosd")
+    composer = None
+    if config.annotated_stream_enabled:
+        device_id, unit_no = identity_values(Path(config.identity_path))
+        composer = OverlayComposer(
+            RuntimeStore(Path(config.telemetry_database_path)),
+            "front",
+            device_id,
+            unit_no,
+            config.osd_font_size,
+            config.osd_safe_margin,
+            config.osd_diagnostics,
+            config.telemetry_max_age_seconds,
+        )
 
     def on_mux(_pad, info):
         buffer = info.get_buffer()
@@ -416,6 +469,7 @@ def run_pipeline(config: InferenceConfig, output_path: Path, health_path: Path, 
                     observed_at_utc=utc_now(),
                     source_kind=config.source_kind,
                     frame_id=f"front-{int(frame_meta.frame_num)}",
+                    stream_generation=run.stream_generation,
                     media_pts_ns=pts_ns,
                     object_class=str(object_meta.obj_label),
                     confidence=float(object_meta.confidence),
@@ -433,6 +487,25 @@ def run_pipeline(config: InferenceConfig, output_path: Path, health_path: Path, 
 
     mux.get_static_pad("src").add_probe(Gst.PadProbeType.BUFFER, on_mux)
     tracker.get_static_pad("src").add_probe(Gst.PadProbeType.BUFFER, on_tracker)
+    if osd is not None and composer is not None:
+        def on_osd(_pad, info):
+            buffer = info.get_buffer()
+            if buffer is None:
+                return Gst.PadProbeReturn.OK
+            batch_meta = pyds.gst_buffer_get_nvds_batch_meta(hash(buffer))
+            if batch_meta is None:
+                return Gst.PadProbeReturn.OK
+            frame_list = batch_meta.frame_meta_list
+            while frame_list is not None:
+                try:
+                    frame_meta = pyds.NvDsFrameMeta.cast(frame_list.data)
+                except StopIteration:
+                    break
+                composer.add_display_meta(pyds, batch_meta, frame_meta)
+                frame_list = frame_list.next
+            return Gst.PadProbeReturn.OK
+
+        osd.get_static_pad("sink").add_probe(Gst.PadProbeType.BUFFER, on_osd)
     bus = pipeline.get_bus()
     pipeline.set_state(Gst.State.PLAYING)
     try:

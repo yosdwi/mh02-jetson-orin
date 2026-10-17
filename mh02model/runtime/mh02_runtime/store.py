@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterator, List, Optional
 
-from .models import AlertEvent, AggregateSample, FatigueState, GpsSnapshot
+from .models import AlertEvent, AggregateSample, FatigueState, GpsHealth, GpsSnapshot
 
 
 class RuntimeStore:
@@ -32,6 +32,11 @@ class RuntimeStore:
                 CREATE TABLE IF NOT EXISTS gps_snapshots (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     monotonic_ns INTEGER NOT NULL,
+                    payload_json TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS gps_health_snapshots (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    heartbeat_monotonic_ns INTEGER NOT NULL,
                     payload_json TEXT NOT NULL
                 );
                 CREATE TABLE IF NOT EXISTS fatigue_snapshots (
@@ -81,6 +86,32 @@ class RuntimeStore:
             return None
         snapshot = GpsSnapshot.model_validate_json(row["payload_json"])
         return snapshot.as_of(as_of or utc_now(), max_age_seconds)
+
+    def save_gps_health(self, health: GpsHealth) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                "INSERT INTO gps_health_snapshots (heartbeat_monotonic_ns, payload_json) VALUES (?, ?)",
+                (health.heartbeat_monotonic_ns, health.model_dump_json()),
+            )
+            connection.execute(
+                "DELETE FROM gps_health_snapshots WHERE id NOT IN "
+                "(SELECT id FROM gps_health_snapshots ORDER BY id DESC LIMIT 1200)",
+            )
+
+    def latest_gps_health(
+        self,
+        heartbeat_max_age_seconds: float = 10.0,
+        fix_max_age_seconds: float = 5.0,
+        as_of: Optional[datetime] = None,
+    ) -> Optional[GpsHealth]:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT payload_json FROM gps_health_snapshots ORDER BY id DESC LIMIT 1",
+            ).fetchone()
+        if row is None:
+            return None
+        health = GpsHealth.model_validate_json(row["payload_json"])
+        return health.as_of(as_of or utc_now(), heartbeat_max_age_seconds, fix_max_age_seconds)
 
     def save_fatigue(self, state: FatigueState) -> None:
         with self._connect() as connection:

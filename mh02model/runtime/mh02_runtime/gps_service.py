@@ -5,6 +5,7 @@ import logging
 import re
 import signal
 import time
+from uuid import uuid4
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -13,7 +14,7 @@ from typing import Iterator, List, Optional
 
 import serial
 
-from .models import GpsSnapshot
+from .models import GpsDiagnosticReason, GpsHealth, GpsOperationalState, GpsSnapshot
 from .diagnostics import configure_logging
 from .store import RuntimeStore, utc_now
 
@@ -33,6 +34,97 @@ class NmeaState:
     satellites: int = 0
     valid: bool = False
     fix_observed_at_utc: Optional[datetime] = None
+
+
+class GpsHealthTracker:
+    def __init__(self, device_path: str, nmea_timeout_seconds: float, fix_max_age_seconds: float) -> None:
+        self.device_path = device_path
+        self.nmea_timeout_seconds = nmea_timeout_seconds
+        self.fix_max_age_seconds = fix_max_age_seconds
+        self.boot_id = uuid4().hex
+        self.state = NmeaState()
+        self.serial_accessible = False
+        self.last_nmea_utc: Optional[datetime] = None
+        self.last_nmea_monotonic_ns: Optional[int] = None
+        self.last_valid_monotonic_ns: Optional[int] = None
+        self.last_error: Optional[str] = None
+        self.reason: GpsDiagnosticReason = "RECONNECTING"
+        self.invalid_nmea_seen = False
+        self.reconnect_count = 0
+        self.retry_count = 0
+
+    def mark_disconnected(self, reason: GpsDiagnosticReason, error: Optional[str] = None) -> None:
+        self.serial_accessible = False
+        self.reason = reason
+        self.last_error = error
+        self.retry_count += 1
+
+    def mark_connected(self) -> None:
+        self.serial_accessible = True
+        self.reconnect_count += 1
+        self.last_error = None
+
+    def observe(self, sentence: str, received_at: datetime, monotonic_ns: int, parsed: Optional[NmeaState]) -> None:
+        self.last_nmea_utc = received_at
+        self.last_nmea_monotonic_ns = monotonic_ns
+        if not has_valid_checksum(sentence):
+            self.invalid_nmea_seen = True
+            self.reason = "INVALID_NMEA"
+            return
+        if parsed is not None:
+            self.state = parsed
+            if parsed.valid:
+                self.last_valid_monotonic_ns = monotonic_ns
+                self.reason = "OK"
+            else:
+                self.reason = "NO_FIX"
+
+    def health(self, now_utc: datetime, now_monotonic_ns: int) -> GpsHealth:
+        nmea_age: Optional[float] = None
+        if self.last_nmea_monotonic_ns is not None:
+            nmea_age = max(0.0, (now_monotonic_ns - self.last_nmea_monotonic_ns) / 1_000_000_000)
+        fix_age: Optional[float] = None
+        if self.last_valid_monotonic_ns is not None:
+            fix_age = max(0.0, (now_monotonic_ns - self.last_valid_monotonic_ns) / 1_000_000_000)
+
+        if not self.serial_accessible:
+            state: GpsOperationalState = "DISCONNECTED"
+        elif nmea_age is None or nmea_age > self.nmea_timeout_seconds:
+            state = "NO_SIGNAL"
+            self.reason = "NMEA_TIMEOUT"
+        elif not self.state.valid or self.state.fix_quality <= 0:
+            state = "NO_SIGNAL"
+            self.reason = "INVALID_NMEA" if self.invalid_nmea_seen else "NO_FIX"
+        elif fix_age is None or fix_age > self.fix_max_age_seconds:
+            state = "NO_SIGNAL"
+            self.reason = "FIX_EXPIRED"
+        else:
+            state = "FIX"
+            self.reason = "OK"
+
+        return GpsHealth(
+            state=state,
+            diagnostic_reason=self.reason,
+            device_path=self.device_path,
+            serial_accessible=self.serial_accessible,
+            nmea_last_received_utc=self.last_nmea_utc,
+            nmea_last_received_monotonic_ns=self.last_nmea_monotonic_ns,
+            last_valid_fix_utc=self.state.fix_observed_at_utc if self.state.valid else None,
+            last_valid_fix_monotonic_ns=self.last_valid_monotonic_ns,
+            fix_quality=self.state.fix_quality,
+            satellites=self.state.satellites,
+            fix_age_seconds=fix_age,
+            last_valid_latitude=self.state.latitude if self.state.valid else None,
+            last_valid_longitude=self.state.longitude if self.state.valid else None,
+            last_valid_speed_kph=self.state.speed_kph if self.state.valid else None,
+            last_valid_altitude_m=self.state.altitude_m if self.state.valid else None,
+            last_error=self.last_error,
+            reconnect_count=self.reconnect_count,
+            retry_count=self.retry_count,
+            heartbeat_utc=now_utc,
+            heartbeat_monotonic_ns=now_monotonic_ns,
+            boot_id=self.boot_id,
+        )
 
 
 def coordinate(raw: str, hemisphere: str) -> Optional[float]:
@@ -183,19 +275,126 @@ class QuectelGnss:
                     sentence=sentence,
                     fix_observed_at_utc=state.fix_observed_at_utc or received_at,
                     status="FIX" if state.valid else "NO_FIX",
+                    operational_state="FIX" if state.valid else "NO_SIGNAL",
+                    diagnostic_reason="OK" if state.valid else "NO_FIX",
                 )
+
+
+def publish_health(
+    store: RuntimeStore,
+    tracker: GpsHealthTracker,
+    args: argparse.Namespace,
+    last_health: Optional[GpsHealth],
+    force: bool = False,
+) -> GpsHealth:
+    now_utc = utc_now()
+    now_monotonic_ns = time.monotonic_ns()
+    health = tracker.health(now_utc, now_monotonic_ns)
+    transition = last_health is None or any(
+        (
+            health.state != last_health.state,
+            health.diagnostic_reason != last_health.diagnostic_reason,
+            health.last_error != last_health.last_error,
+            health.reconnect_count != last_health.reconnect_count,
+            health.retry_count != last_health.retry_count,
+        ),
+    )
+    heartbeat_due = last_health is None or (
+        now_monotonic_ns - last_health.heartbeat_monotonic_ns
+    ) >= int(args.health_heartbeat_seconds * 1_000_000_000)
+    if force or transition or heartbeat_due:
+        store.save_gps_health(health)
+        if transition:
+            LOGGER.info(
+                "GPS state transition",
+                extra={
+                    "gps_state": health.state,
+                    "diagnostic_reason": health.diagnostic_reason,
+                    "device_path": health.device_path or "",
+                    "reconnect_count": health.reconnect_count,
+                },
+            )
+        return health
+    return last_health
+
+
+def apply_runtime_config(args: argparse.Namespace) -> argparse.Namespace:
+    if args.config_path is None or not Path(args.config_path).exists():
+        return args
+    from .configuration import ConfigStore
+
+    gps = ConfigStore(Path(args.config_path)).snapshot().config.gps
+    args.nmea_device = gps.device_path
+    args.at_device = gps.at_device_path
+    args.nmea_timeout_seconds = gps.nmea_timeout_seconds
+    args.fix_max_age_seconds = gps.max_age_seconds
+    args.health_heartbeat_seconds = gps.health_heartbeat_seconds
+    args.retry_seconds = gps.reconnect_seconds
+    return args
 
 
 def run(args: argparse.Namespace, stop: Event) -> None:
     store = RuntimeStore(Path(args.database))
     reader = QuectelGnss(args.nmea_device, args.at_device, args.baudrate)
+    tracker = GpsHealthTracker(args.nmea_device, args.nmea_timeout_seconds, args.fix_max_age_seconds)
+    last_health: Optional[GpsHealth] = None
     while not stop.is_set():
         try:
-            for snapshot in reader.read(stop):
-                store.save_gps(snapshot)
-        except (OSError, serial.SerialException, RuntimeError, ValueError) as exc:
-            LOGGER.warning("GPS input unavailable: %s; retrying in 5 seconds", exc)
-            stop.wait(5)
+            if not Path(args.nmea_device).exists() or not Path(args.at_device).exists():
+                missing = args.nmea_device if not Path(args.nmea_device).exists() else args.at_device
+                tracker.mark_disconnected("SERIAL_PORT_MISSING", f"serial device is missing: {missing}")
+                last_health = publish_health(store, tracker, args, last_health, force=True)
+                stop.wait(args.retry_seconds)
+                continue
+            reader.ensure_gnss_enabled()
+            with serial.Serial(args.nmea_device, args.baudrate, timeout=1) as port:
+                tracker.mark_connected()
+                last_health = publish_health(store, tracker, args, last_health, force=True)
+                nmea_state = NmeaState()
+                while not stop.is_set():
+                    raw_line = port.readline()
+                    if not raw_line:
+                        last_health = publish_health(store, tracker, args, last_health)
+                        continue
+                    received_at = utc_now()
+                    monotonic_ns = time.monotonic_ns()
+                    sentence = raw_line.decode("ascii", errors="ignore").strip()
+                    parsed = parse_nmea(sentence, nmea_state, received_at)
+                    tracker.observe(sentence, received_at, monotonic_ns, parsed)
+                    if parsed is None:
+                        last_health = publish_health(store, tracker, args, last_health)
+                        continue
+                    nmea_state = parsed
+                    health = tracker.health(received_at, monotonic_ns)
+                    store.save_gps(
+                        GpsSnapshot(
+                            timestamp_utc=received_at,
+                            monotonic_ns=monotonic_ns,
+                            latitude=parsed.latitude,
+                            longitude=parsed.longitude,
+                            speed_kph=parsed.speed_kph,
+                            altitude_m=parsed.altitude_m,
+                            fix_quality=parsed.fix_quality,
+                            satellites=parsed.satellites,
+                            valid=parsed.valid and health.state == "FIX",
+                            sentence=sentence,
+                            fix_observed_at_utc=parsed.fix_observed_at_utc or received_at,
+                            status="FIX" if health.state == "FIX" else "NO_FIX",
+                            operational_state=health.state,
+                            diagnostic_reason=health.diagnostic_reason,
+                            boot_id=tracker.boot_id,
+                        ),
+                    )
+                    last_health = publish_health(store, tracker, args, last_health)
+        except RuntimeError as exc:
+            tracker.mark_disconnected("AT_FAILURE", str(exc))
+            last_health = publish_health(store, tracker, args, last_health, force=True)
+            stop.wait(args.retry_seconds)
+        except (OSError, serial.SerialException, ValueError) as exc:
+            reason = "SERIAL_PORT_MISSING" if not Path(args.nmea_device).exists() else "SERIAL_READ_ERROR"
+            tracker.mark_disconnected(reason, str(exc))
+            last_health = publish_health(store, tracker, args, last_health, force=True)
+            stop.wait(args.retry_seconds)
 
 
 def parser() -> argparse.ArgumentParser:
@@ -204,6 +403,11 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--nmea-device", default=DEFAULT_NMEA_DEVICE)
     result.add_argument("--at-device", default=DEFAULT_AT_DEVICE)
     result.add_argument("--baudrate", type=int, default=115200)
+    result.add_argument("--config-path", type=Path, default=Path("/etc/mh02/config.json"))
+    result.add_argument("--nmea-timeout-seconds", type=float, default=5.0)
+    result.add_argument("--fix-max-age-seconds", type=float, default=5.0)
+    result.add_argument("--health-heartbeat-seconds", type=float, default=2.0)
+    result.add_argument("--retry-seconds", type=float, default=5.0)
     return result
 
 
@@ -212,7 +416,7 @@ def main() -> int:
     stop = Event()
     signal.signal(signal.SIGTERM, lambda _signum, _frame: stop.set())
     signal.signal(signal.SIGINT, lambda _signum, _frame: stop.set())
-    args = parser().parse_args()
+    args = apply_runtime_config(parser().parse_args())
     run(args, stop)
     return 0
 

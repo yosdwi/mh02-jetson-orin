@@ -4,8 +4,7 @@ const liveMessage = $('live-message');
 const archivePlayer = $('archive-player');
 const archiveMessage = $('archive-message');
 const archiveOverlay = $('archive-overlay');
-const frontAiOverlay = $('front-ai-overlay');
-const state = { date: '', hour: new Date().getHours(), archiveCamera: 'front', recordings: [], datalogs: [], alerts: [], health: [], cameras: [], config: null };
+const state = { date: '', hour: new Date().getHours(), archiveCamera: 'front', liveMode: 'annotated', recordings: [], datalogs: [], alerts: [], health: [], cameras: [], config: null };
 let livePeer = null;
 let liveHls = null;
 let pendingRestarts = [];
@@ -20,11 +19,10 @@ function closeLiveSources() {
   if (liveHls) { liveHls.destroy(); liveHls = null; }
   livePlayer.srcObject = null;
   livePlayer.removeAttribute('src');
-  frontAiOverlay.getContext('2d').clearRect(0, 0, frontAiOverlay.width, frontAiOverlay.height);
 }
 
 async function setupHlsFallback(camera) {
-  const source = camera.live_hls_url;
+  const source = state.liveMode === 'annotated' && camera.annotated_available ? camera.annotated_hls_url : camera.live_hls_url;
   if (livePlayer.canPlayType('application/vnd.apple.mpegurl')) {
     livePlayer.src = source;
     liveMessage.hidden = true;
@@ -52,7 +50,8 @@ async function setupLive(camera) {
     if (peer.iceGatheringState === 'complete') resolve();
     else peer.addEventListener('icegatheringstatechange', () => { if (peer.iceGatheringState === 'complete') resolve(); });
   });
-  const endpoint = `${location.protocol}//${location.hostname}:8889/${camera.rtsp_path}/whep`;
+  const streamPath = state.liveMode === 'annotated' && camera.annotated_available ? camera.annotated_rtsp_path : camera.rtsp_path;
+  const endpoint = `${location.protocol}//${location.hostname}:8889/${streamPath}/whep`;
   const response = await fetch(endpoint, { method: 'POST', headers: { 'Content-Type': 'application/sdp' }, body: peer.localDescription.sdp });
   if (!response.ok) throw new Error(`WHEP ${response.status}`);
   await peer.setRemoteDescription({ type: 'answer', sdp: await response.text() });
@@ -64,6 +63,7 @@ async function loadLiveCamera(cameraId) {
   $('live-camera').value = camera.camera_id;
   try {
     await setupLive(camera);
+    if (state.liveMode === 'annotated' && !camera.annotated_available) liveMessage.textContent = 'AI UNAVAILABLE · showing clean stream';
   } catch (_error) {
     await setupHlsFallback(camera);
   }
@@ -82,32 +82,8 @@ async function refreshCameras() {
     selector.appendChild(option);
   });
   selector.addEventListener('change', () => loadLiveCamera(selector.value));
+  $('live-mode').addEventListener('change', () => { state.liveMode = $('live-mode').value; loadLiveCamera(selector.value); });
   await loadLiveCamera(state.cameras[0] && state.cameras[0].camera_id);
-}
-
-function drawFrontDetections(detections) {
-  const context = frontAiOverlay.getContext('2d');
-  const bounds = frontAiOverlay.getBoundingClientRect();
-  const scale = window.devicePixelRatio || 1;
-  frontAiOverlay.width = Math.max(1, Math.round(bounds.width * scale));
-  frontAiOverlay.height = Math.max(1, Math.round(bounds.height * scale));
-  context.setTransform(scale, 0, 0, scale, 0, 0);
-  context.clearRect(0, 0, bounds.width, bounds.height);
-  if ($('live-camera').value !== 'front') return;
-  context.font = '12px IBM Plex Mono, monospace';
-  detections.forEach((detection) => {
-    const box = detection.bounding_box;
-    const x = box.left * bounds.width;
-    const y = box.top * bounds.height;
-    const width = box.width * bounds.width;
-    const height = box.height * bounds.height;
-    context.strokeStyle = '#b8e6b0';
-    context.lineWidth = 2;
-    context.strokeRect(x, y, width, height);
-    const label = `${detection.object_class} ${(detection.confidence * 100).toFixed(0)}%${detection.track_id ? ` #${detection.track_id}` : ''}`;
-    context.fillStyle = '#b8e6b0';
-    context.fillText(label, x + 4, Math.max(14, y - 5));
-  });
 }
 
 async function refreshInference() {
@@ -119,9 +95,6 @@ async function refreshInference() {
   setMetric('inference-latency', health.latency_p95_ms === null ? '—' : `${Number(health.latency_p95_ms).toFixed(1)} ms`);
   const message = health.diagnostics && health.diagnostics.length ? health.diagnostics.join(' ') : `${health.detections} genuine observations · ${health.dropped_frames} dropped frames`;
   $('inference-message').textContent = message;
-  const detectionsResponse = await fetch('/api/inference/detections?limit=25', { cache: 'no-store' });
-  const detections = detectionsResponse.ok ? await detectionsResponse.json() : [];
-  drawFrontDetections(health.status === 'running' ? detections : []);
   const warningsResponse = await fetch('/api/inference/warnings?limit=8', { cache: 'no-store' });
   const warnings = warningsResponse.ok ? await warningsResponse.json() : [];
   const warningList = $('inference-warnings');
@@ -144,8 +117,10 @@ function updateAggregate(sample) {
   setMetric('device-id', sample.device_id);
   setMetric('unit-no', sample.unit_no);
   const gps = sample.gps;
-  setMetric('gps-position', gps && gps.valid ? `${Number(gps.latitude).toFixed(5)}, ${Number(gps.longitude).toFixed(5)}` : 'No fix', gps && !gps.valid);
-  setMetric('gps-speed', gps && gps.speed_kph !== null ? `${Number(gps.speed_kph).toFixed(1)} km/h` : '—');
+  const gpsHealth = sample.gps_health;
+  const gpsState = gpsHealth ? String(gpsHealth.state).replace('_', ' ') : (gps && gps.valid ? 'FIX' : 'UNKNOWN');
+  setMetric('gps-position', gps && gps.valid && gpsState === 'FIX' ? `${Number(gps.latitude).toFixed(5)}, ${Number(gps.longitude).toFixed(5)}` : `GPS ${gpsState}`, gpsState !== 'FIX');
+  setMetric('gps-speed', gps && gps.valid && gpsState === 'FIX' && gps.speed_kph !== null ? `${Number(gps.speed_kph).toFixed(1)} km/h` : '--');
   const fatigue = sample.fatigue;
   setMetric('fatigue-eyes', fatigue && fatigue.closed_eyes ? 'Closed' : 'Normal', fatigue && fatigue.closed_eyes);
   setMetric('fatigue-yawn', fatigue && fatigue.yawning ? 'Detected' : 'Normal', fatigue && fatigue.yawning);
@@ -537,6 +512,10 @@ async function refreshDiagnostics() {
   const health = await healthResponse.json();
   const healthy = health.services.filter((service) => service.status === 'healthy').length;
   $('diagnostics-summary').textContent = `${healthy}/${health.services.length} services active · ${health.cameras.filter((camera) => camera.device_present).length}/${health.cameras.length} camera devices present`;
+  const gps = health.gps;
+  $('gps-diagnostics').textContent = gps
+    ? `GPS ${String(gps.state).replace('_', ' ')} · reason ${gps.diagnostic_reason} · serial ${gps.serial_accessible ? 'available' : 'unavailable'} · NMEA ${gps.nmea_last_received_utc || '--'} · fix ${gps.last_valid_fix_utc || '--'} · sats ${gps.satellites ?? '--'} · reconnects ${gps.reconnect_count}`
+    : 'GPS UNKNOWN · health heartbeat unavailable';
   const query = encodeURIComponent($('log-query').value.trim());
   const logsResponse = await fetch(`/api/diagnostics/logs?limit=80${query ? `&query=${query}` : ''}`, { cache: 'no-store' });
   const logs = await logsResponse.json();

@@ -18,9 +18,11 @@ def nmea_coordinate(value: Optional[float], latitude: bool) -> str:
     return f"{degree_text}{minutes} {negative if value < 0 else positive}"
 
 
-def overlay_lines(sample: AggregateSample) -> Tuple[str, str, str]:
-    gps = sample.gps if sample.gps and sample.gps.valid else None
-    speed = "---" if gps is None or gps.speed_kph is None else str(round(gps.speed_kph)).zfill(3)
+def overlay_lines(sample: AggregateSample, camera_id: str = "FRONT", clock_source: str = "utc_observed") -> Tuple[str, str, str]:
+    health = sample.gps_health
+    gps_state = health.state if health is not None else ("FIX" if sample.gps and sample.gps.valid else "UNKNOWN")
+    gps = sample.gps if gps_state == "FIX" and sample.gps and sample.gps.valid else None
+    speed = "--" if gps is None or gps.speed_kph is None else str(round(gps.speed_kph)).zfill(3)
     payload = sample.redis_payload
     acceleration = next(
         (payload.get(key) for key in ("acceleration", "acc", "ACC", "acc_status") if payload.get(key) is not None),
@@ -37,10 +39,15 @@ def overlay_lines(sample: AggregateSample) -> Tuple[str, str, str]:
     if not channel_text.startswith("CH"):
         channel_text = f"CH{channel_text}"
     local_timestamp = sample.timestamp_utc.astimezone().strftime("%d-%m-%Y %H:%M:%S")
+    state_text = gps_state.replace("_", " ")
+    fatigue = sample.fatigue if camera_id.lower() == "cabin" else None
+    fatigue_text = ""
+    if fatigue is not None:
+        fatigue_text = f" FATIGUE:{'ALERT' if fatigue.closed_eyes or fatigue.yawning else 'NORMAL'} EAR:{fatigue.ear if fatigue.ear is not None else '--'} MAR:{fatigue.mar if fatigue.mar is not None else '--'}"
     return (
-        f"{nmea_coordinate(gps.latitude if gps else None, True)}, {nmea_coordinate(gps.longitude if gps else None, False)}, {speed}KM/H ACC:{acceleration_text}",
-        f"ID: {sample.device_id or '--'} Name: {sample.unit_no or '--'}",
-        f"{local_timestamp} {sample.unit_no or '--'} {channel_text}",
+        f"GPS {state_text}: {nmea_coordinate(gps.latitude if gps else None, True)}, {nmea_coordinate(gps.longitude if gps else None, False)}, {speed}KM/H ACC:{acceleration_text}",
+        f"ID: {sample.device_id or '--'} UNIT: {sample.unit_no or '--'} CAM:{camera_id.upper()}{fatigue_text}",
+        f"{local_timestamp} {sample.unit_no or '--'} {channel_text} CLOCK:{clock_source.upper()}",
     )
 
 
@@ -114,8 +121,10 @@ def render_vtt(
     segment_start_utc: datetime,
     segment_start_pts_ns: Optional[int] = None,
     segment_duration_seconds: Optional[float] = None,
+    camera_id: str = "FRONT",
 ) -> str:
-    use_media_pts = vtt_clock_source(samples, segment_start_pts_ns) == "media_pts"
+    clock_source = vtt_clock_source(samples, segment_start_pts_ns)
+    use_media_pts = clock_source == "media_pts"
     ordered = sorted(
         samples,
         key=lambda sample: (
@@ -142,7 +151,7 @@ def render_vtt(
         else:
             end = begin + 0.05
         end = max(begin + 0.05, end)
-        for line_number, (line, position) in enumerate(zip(overlay_lines(sample), positions)):
+        for line_number, (line, position) in enumerate(zip(overlay_lines(sample, camera_id, clock_source), positions)):
             lines.append(f"{sample.sequence}-{line_number}")
             lines.append(
                 f"{timestamp(begin)} --> {timestamp(end)} line:{position}% position:2% size:96% align:start",

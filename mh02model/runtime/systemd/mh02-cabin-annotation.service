@@ -1,0 +1,21 @@
+[Unit]
+Description=MH02 NVIDIA DeepStream cabin fatigue annotated stream
+After=mh02-mediamtx.service mh02-cabin.service
+Requires=mh02-mediamtx.service
+ConditionPathExists=/etc/mh02/config.json
+
+[Service]
+User=smartd
+SupplementaryGroups=video
+WorkingDirectory=/home/smartd/mh02_runtime
+Environment=PYTHONPATH=/home/smartd/mh02_runtime:/home/smartd/mh02_runtime/legacy_mh02:/opt/nvidia/deepstream/deepstream-6.2/lib
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/home/smartd/mh02_runtime/.venv/bin/python -m mh02_runtime.cabin_annotation_service --config-path /etc/mh02/config.json
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=mh02-cabin-annotation
+
+[Install]
+WantedBy=multi-user.target

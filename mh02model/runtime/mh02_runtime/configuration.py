@@ -38,6 +38,11 @@ class GpsConfig(BaseModel):
 
     max_age_seconds: float = Field(default=5.0, gt=0, le=300)
     device_path: str = "/dev/serial/by-id/mh02-gps"
+    at_device_path: str = "/dev/serial/by-id/mh02-gps-at"
+    nmea_timeout_seconds: float = Field(default=5.0, gt=0, le=300)
+    health_heartbeat_seconds: float = Field(default=2.0, gt=0, le=60)
+    health_heartbeat_max_age_seconds: float = Field(default=10.0, gt=0, le=300)
+    reconnect_seconds: float = Field(default=5.0, gt=0, le=300)
 
 
 class FatigueConfig(BaseModel):
@@ -68,6 +73,37 @@ class InferenceConfig(BaseModel):
     health_path: str = "/var/lib/mh02/inference/front-health.json"
     confidence_threshold: float = Field(default=0.5, ge=0, le=1)
     warning_classes: Tuple[str, ...] = ("person", "car", "truck", "bus", "motorcycle", "two-wheeler")
+    annotated_stream_enabled: bool = False
+    annotated_rtsp_url: str = "rtsp://127.0.0.1:8554/front-annotated"
+    annotated_bitrate: int = Field(default=4_000_000, gt=100_000, le=20_000_000)
+    osd_process_mode: int = Field(default=1, ge=0, le=1)
+    osd_font_size: int = Field(default=22, ge=10, le=64)
+    osd_safe_margin: int = Field(default=24, ge=0, le=300)
+    osd_diagnostics: bool = False
+    telemetry_max_age_seconds: float = Field(default=2.0, gt=0, le=30)
+    telemetry_database_path: str = "/var/lib/mh02/state/mh02.sqlite3"
+    identity_path: str = "/etc/mh02/smartd.json"
+
+
+class CabinAnnotationConfig(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    enabled: bool = False
+    source: str = "rtsp://127.0.0.1:8554/cabin"
+    annotated_rtsp_url: str = "rtsp://127.0.0.1:8554/cabin-annotated"
+    output_path: str = "/var/lib/mh02/inference/cabin-events.ndjson"
+    health_path: str = "/var/lib/mh02/inference/cabin-health.json"
+    database_path: str = "/var/lib/mh02/state/mh02.sqlite3"
+    app_root: str = "/home/smartd/mh02_runtime/legacy_mh02"
+    face_config: str = "0.15,0.60,-70,70,-50,70"
+    roi: Tuple[int, int, int, int] = (300, 100, 1200, 700)
+    sample_interval_seconds: float = Field(default=0.25, gt=0, le=2)
+    max_sync_age_ms: int = Field(default=250, gt=0, le=2000)
+    telemetry_max_age_seconds: float = Field(default=2.0, gt=0, le=30)
+    bitrate: int = Field(default=3_000_000, gt=100_000, le=20_000_000)
+    osd_font_size: int = Field(default=22, ge=10, le=64)
+    osd_safe_margin: int = Field(default=24, ge=0, le=300)
+    diagnostics: bool = False
 
 
 class RecordingConfig(BaseModel):
@@ -87,6 +123,7 @@ class RuntimeConfig(BaseModel):
     gps: GpsConfig = GpsConfig()
     fatigue: FatigueConfig = FatigueConfig()
     inference: InferenceConfig = InferenceConfig()
+    cabin_annotation: CabinAnnotationConfig = CabinAnnotationConfig()
     recording: RecordingConfig = RecordingConfig()
 
     @model_validator(mode="after")
@@ -107,6 +144,8 @@ class RuntimeConfig(BaseModel):
             raise ValueError("live front inference source must be an RTSP URL")
         if self.inference.source_kind == "replay_mp4" and not self.inference.source:
             raise ValueError("front inference replay source must not be empty")
+        if self.cabin_annotation.enabled and not self.cabin_annotation.source.startswith("rtsp://"):
+            raise ValueError("cabin annotation source must be an RTSP URL")
         return self
 
 
@@ -149,6 +188,8 @@ RESTART_ALLOWLIST: Tuple[str, ...] = (
     "mh02-alerts.service",
     "mh02-web.service",
     "mh02-front-inference.service",
+    "mh02-gps.service",
+    "mh02-cabin-annotation.service",
 )
 
 
@@ -250,6 +291,10 @@ class ConfigStore:
             return ("mh02-vlog.service", "mh02-cabin.service")
         if previous.inference != current.inference:
             return ("mh02-fatigue.service", "mh02-front-inference.service")
+        if previous.cabin_annotation != current.cabin_annotation:
+            return ("mh02-cabin-annotation.service",)
+        if previous.gps != current.gps:
+            return ("mh02-gps.service", "mh02-aggregate.service", "mh02-vlog.service")
         return ()
 
     @staticmethod

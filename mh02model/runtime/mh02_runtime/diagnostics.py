@@ -22,6 +22,10 @@ class JsonFormatter(logging.Formatter):
         correlation_id = getattr(record, "correlation_id", None)
         if correlation_id is not None:
             payload["correlation_id"] = str(correlation_id)
+        for key in ("gps_state", "diagnostic_reason", "device_path", "reconnect_count"):
+            value = getattr(record, key, None)
+            if value is not None:
+                payload[key] = value
         return json.dumps(payload, separators=(",", ":"), ensure_ascii=True)
 
 

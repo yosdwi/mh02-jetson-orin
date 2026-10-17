@@ -8,3 +8,7 @@ paths:
     source: publisher
   cabin:
     source: publisher
+  front-annotated:
+    source: publisher
+  cabin-annotated:
+    source: publisher

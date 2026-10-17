@@ -65,13 +65,20 @@ def run(args: argparse.Namespace, stop: Event) -> None:
         sample_time = utc_now()
         monotonic_ns = time.monotonic_ns()
         sequence += 1
+        gps_health = store.latest_gps_health(
+            args.gps_health_max_age_seconds,
+            args.gps_max_age_seconds,
+            sample_time,
+        )
+        current_gps = store.latest_gps(args.gps_max_age_seconds, sample_time) if gps_health and gps_health.state == "FIX" else None
         sample = AggregateSample(
             sequence=sequence,
             timestamp_utc=sample_time,
             monotonic_ns=monotonic_ns,
             device_id=str(payload.get("deviceid", device_id)),
             unit_no=str(payload.get("unitno", unit_no)),
-            gps=store.latest_gps(args.gps_max_age_seconds, sample_time),
+            gps=current_gps,
+            gps_health=gps_health,
             redis_payload=payload,
             fatigue=store.latest_fatigue(args.fatigue_max_age_seconds, sample_time),
         )
@@ -87,6 +94,7 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--redis-key", default="ROW_DATA:data")
     result.add_argument("--interval", type=float, default=1.0)
     result.add_argument("--gps-max-age-seconds", type=float, default=5.0)
+    result.add_argument("--gps-health-max-age-seconds", type=float, default=10.0)
     result.add_argument("--fatigue-max-age-seconds", type=float, default=2.0)
     return result
 
