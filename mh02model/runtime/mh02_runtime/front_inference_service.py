@@ -264,6 +264,7 @@ class InferenceRun:
         self.dropped_frames = 0
         self.started_monotonic = time.monotonic()
         self.received_pts: Dict[int, Deque[int]] = {}
+        self.received_frame_nums: Dict[int, Deque[int]] = {}
         self.latencies: List[float] = []
         self.last_media_pts_ns: Optional[int] = None
         self.last_health_write = 0.0
@@ -271,6 +272,9 @@ class InferenceRun:
         self.identity = FrameIdentityManager("front")
         self.tracker_frame_refs: Dict[int, Deque[FrameRef]] = {}
         self.osd_frame_refs: Dict[int, Deque[FrameRef]] = {}
+        self.tracker_frame_refs_by_num: Dict[int, Deque[FrameRef]] = {}
+        self.osd_frame_refs_by_num: Dict[int, Deque[FrameRef]] = {}
+        self.frame_num_order: Deque[int] = deque()
         self.unmatched_latency_frames = 0
 
     def health(self, status: str, diagnostics: Optional[List[str]] = None) -> InferenceHealth:
@@ -309,7 +313,12 @@ class InferenceRun:
             self.writer.health(self.health(status, diagnostics))
             self.last_health_write = now
 
-    def record_frame(self, pts_ns: Optional[int], frame_ref: Optional[FrameRef] = None) -> None:
+    def record_frame(
+        self,
+        pts_ns: Optional[int],
+        frame_ref: Optional[FrameRef] = None,
+        frame_num: Optional[int] = None,
+    ) -> None:
         self.frames += 1
         self.last_media_pts_ns = pts_ns
         frame_ref = frame_ref or self.identity.register(pts_ns, timestamp_source="unknown")
@@ -317,6 +326,17 @@ class InferenceRun:
             self.received_pts.setdefault(pts_ns, deque()).append(time.monotonic_ns())
             self.tracker_frame_refs.setdefault(pts_ns, deque()).append(frame_ref)
             self.osd_frame_refs.setdefault(pts_ns, deque()).append(frame_ref)
+        if frame_num is not None:
+            self.received_frame_nums.setdefault(frame_num, deque()).append(time.monotonic_ns())
+            self.tracker_frame_refs_by_num.setdefault(frame_num, deque()).append(frame_ref)
+            self.osd_frame_refs_by_num.setdefault(frame_num, deque()).append(frame_ref)
+            self.frame_num_order.append(frame_num)
+            while len(self.frame_num_order) > 512:
+                old_num = self.frame_num_order.popleft()
+                if old_num not in self.frame_num_order:
+                    self.received_frame_nums.pop(old_num, None)
+                    self.tracker_frame_refs_by_num.pop(old_num, None)
+                    self.osd_frame_refs_by_num.pop(old_num, None)
             while sum(len(values) for values in self.tracker_frame_refs.values()) > 512:
                 oldest = next(iter(self.tracker_frame_refs))
                 self.tracker_frame_refs[oldest].popleft()
@@ -327,21 +347,30 @@ class InferenceRun:
                     self.osd_frame_refs.pop(oldest, None)
         self.write_health("running")
 
-    def frame_ref_for(self, pts_ns: Optional[int], consumer: str) -> Optional[FrameRef]:
-        if pts_ns is None:
-            return None
+    def frame_ref_for(self, pts_ns: Optional[int], consumer: str, frame_num: Optional[int] = None) -> Optional[FrameRef]:
+        values_by_num = self.tracker_frame_refs_by_num if consumer == "tracker" else self.osd_frame_refs_by_num
+        queue = values_by_num.get(frame_num) if frame_num is not None else None
         values = self.tracker_frame_refs if consumer == "tracker" else self.osd_frame_refs
-        queue = values.get(pts_ns)
+        if not queue and pts_ns is not None:
+            queue = values.get(pts_ns)
         if not queue:
             return None
         result = queue.popleft()
         if not queue:
-            del values[pts_ns]
+            if frame_num is not None and values_by_num.get(frame_num) is queue:
+                del values_by_num[frame_num]
+            elif pts_ns is not None and values.get(pts_ns) is queue:
+                del values[pts_ns]
         return result
 
-    def frame_latency_ms(self, pts_ns: Optional[int]) -> Optional[float]:
+    def frame_latency_ms(self, pts_ns: Optional[int], frame_num: Optional[int] = None) -> Optional[float]:
         received = None
-        if pts_ns is not None and self.received_pts.get(pts_ns):
+        if frame_num is not None and self.received_frame_nums.get(frame_num):
+            queue = self.received_frame_nums[frame_num]
+            received = queue.popleft()
+            if not queue:
+                del self.received_frame_nums[frame_num]
+        elif pts_ns is not None and self.received_pts.get(pts_ns):
             queue = self.received_pts[pts_ns]
             received = queue.popleft()
             if not queue:
@@ -494,15 +523,28 @@ def run_pipeline(config: InferenceConfig, output_path: Path, health_path: Path, 
     def on_mux(_pad, info):
         buffer = info.get_buffer()
         if buffer is not None:
-            pts_ns = None if buffer.pts == Gst.CLOCK_TIME_NONE else int(buffer.pts)
-            frame_ref = run.identity.register(
-                pts_ns,
-                capture_utc=utc_now(),
-                capture_monotonic_ns=time.monotonic_ns(),
-                timestamp_source="ingest_estimate",
-                utc_uncertainty_ms=100.0,
-            )
-            run.record_frame(pts_ns, frame_ref)
+            batch_meta = pyds.gst_buffer_get_nvds_batch_meta(hash(buffer))
+            if batch_meta is not None:
+                frame_list = batch_meta.frame_meta_list
+                while frame_list is not None:
+                    try:
+                        frame_meta = pyds.NvDsFrameMeta.cast(frame_list.data)
+                    except StopIteration:
+                        break
+                    pts_ns = int(frame_meta.buf_pts) if frame_meta.buf_pts != Gst.CLOCK_TIME_NONE else None
+                    frame_ref = run.identity.register(
+                        pts_ns,
+                        capture_utc=utc_now(),
+                        capture_monotonic_ns=time.monotonic_ns(),
+                        timestamp_source="ingest_estimate",
+                        utc_uncertainty_ms=100.0,
+                    )
+                    run.record_frame(pts_ns, frame_ref, int(frame_meta.frame_num))
+                    frame_list = frame_list.next
+            else:
+                pts_ns = None if buffer.pts == Gst.CLOCK_TIME_NONE else int(buffer.pts)
+                frame_ref = run.identity.register(pts_ns, timestamp_source="unknown")
+                run.record_frame(pts_ns, frame_ref)
         return Gst.PadProbeReturn.OK
 
     def on_tracker(_pad, info):
@@ -522,8 +564,9 @@ def run_pipeline(config: InferenceConfig, output_path: Path, health_path: Path, 
             frame_height = max(1.0, float(frame_meta.source_frame_height or 1080))
             pts_ns = int(frame_meta.buf_pts) if frame_meta.buf_pts != Gst.CLOCK_TIME_NONE else None
             object_list = frame_meta.obj_meta_list
-            frame_latency_ms = run.frame_latency_ms(pts_ns)
-            frame_ref = run.frame_ref_for(pts_ns, "tracker")
+            frame_num = int(frame_meta.frame_num)
+            frame_latency_ms = run.frame_latency_ms(pts_ns, frame_num)
+            frame_ref = run.frame_ref_for(pts_ns, "tracker", frame_num)
             while object_list is not None:
                 try:
                     object_meta = pyds.NvDsObjectMeta.cast(object_list.data)
@@ -575,7 +618,12 @@ def run_pipeline(config: InferenceConfig, output_path: Path, health_path: Path, 
                 except StopIteration:
                     break
                 pts_ns = int(frame_meta.buf_pts) if frame_meta.buf_pts != Gst.CLOCK_TIME_NONE else None
-                composer.add_display_meta(pyds, batch_meta, frame_meta, run.frame_ref_for(pts_ns, "osd"))
+                composer.add_display_meta(
+                    pyds,
+                    batch_meta,
+                    frame_meta,
+                    run.frame_ref_for(pts_ns, "osd", int(frame_meta.frame_num)),
+                )
                 frame_list = frame_list.next
             return Gst.PadProbeReturn.OK
 
