@@ -8,7 +8,10 @@ ConditionPathExists=/etc/mh02/config.json
 User=smartd
 SupplementaryGroups=video
 WorkingDirectory=/home/smartd/mh02_runtime
-Environment=PYTHONPATH=/home/smartd/mh02_runtime:/home/smartd/mh02_runtime/legacy_mh02:/opt/nvidia/deepstream/deepstream-6.2/lib
+Environment=PYTHONPATH=/usr/lib/python3/dist-packages:/home/smartd/mh02_runtime:/home/smartd/mh02_runtime/legacy_mh02
+Environment=GST_PLUGIN_PATH=/home/smartd/mh02_dev/deepstream-6.2/root/opt/nvidia/deepstream/deepstream-6.2/lib/gst-plugins
+Environment=LD_LIBRARY_PATH=/home/smartd/mh02_dev/deepstream-6.2/deps/root/usr/lib/aarch64-linux-gnu:/home/smartd/mh02_dev/deepstream-6.2/root/opt/nvidia/deepstream/deepstream-6.2/lib:/home/smartd/mh02_dev/deepstream-6.2/root/opt/nvidia/deepstream/deepstream-6.2/lib/gst-plugins
+Environment=MH02_DEEPSTREAM_VERSION=6.2.0
 Environment=PYTHONUNBUFFERED=1
 ExecStart=/home/smartd/mh02_runtime/.venv/bin/python -m mh02_runtime.cabin_annotation_service --config-path /etc/mh02/config.json
 Restart=on-failure

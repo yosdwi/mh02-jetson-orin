@@ -8,7 +8,7 @@ SupplementaryGroups=dialout
 WorkingDirectory=/home/smartd/mh02_runtime
 Environment=PYTHONPATH=/home/smartd/mh02_runtime
 Environment=PYTHONUNBUFFERED=1
-ExecStart=/home/smartd/mh02_runtime/.venv/bin/python -m mh02_runtime.gps_service
+ExecStart=/home/smartd/mh02_runtime/.venv/bin/python -m mh02_runtime.gps_service --config-path /etc/mh02/config.json
 Restart=always
 RestartSec=5
 StandardOutput=journal
