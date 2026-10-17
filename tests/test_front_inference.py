@@ -109,3 +109,18 @@ def test_frame_latency_does_not_use_another_frame_when_pts_is_unmatched(tmp_path
     assert run.unmatched_latency_frames == 1
     assert run.health("running").unmatched_latency_frames == 1
     writer.close()
+
+
+def test_frame_latency_can_use_the_same_deepstream_frame_number(tmp_path: Path) -> None:
+    engine = tmp_path / "model.engine"
+    engine.write_bytes(b"engine")
+    config = default_config().inference.model_copy(update={"engine_path": str(engine)})
+    writer = OutputWriter(tmp_path / "events.ndjson", tmp_path / "health.json")
+    run = InferenceRun(config, writer, Event())
+
+    run.record_frame(100, frame_num=7)
+    latency = run.frame_latency_ms(999, frame_num=7)
+
+    assert latency is not None
+    assert run.unmatched_latency_frames == 0
+    writer.close()
