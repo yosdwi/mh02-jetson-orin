@@ -95,7 +95,7 @@ def test_missing_deepstream_assets_write_blocked_health(tmp_path: Path, monkeypa
     assert "configuration asset is missing" in health.diagnostics[0]
 
 
-def test_frame_latency_is_recorded_when_tracker_pts_uses_fifo_fallback(tmp_path: Path) -> None:
+def test_frame_latency_does_not_use_another_frame_when_pts_is_unmatched(tmp_path: Path) -> None:
     engine = tmp_path / "model.engine"
     engine.write_bytes(b"engine")
     config = default_config().inference.model_copy(update={"engine_path": str(engine)})
@@ -104,7 +104,8 @@ def test_frame_latency_is_recorded_when_tracker_pts_uses_fifo_fallback(tmp_path:
 
     run.record_frame(100)
     latency = run.frame_latency_ms(200)
-    run.record_detection(observation().model_copy(update={"media_pts_ns": 200, "latency_ms": latency}))
 
-    assert latency is not None
-    assert run.health("running").latency_p95_ms is not None
+    assert latency is None
+    assert run.unmatched_latency_frames == 1
+    assert run.health("running").unmatched_latency_frames == 1
+    writer.close()

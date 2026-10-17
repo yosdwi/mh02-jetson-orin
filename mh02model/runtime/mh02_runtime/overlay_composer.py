@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any, Optional, Tuple
 
 from .evidence import overlay_lines
+from .frame_sync import FrameRef, TelemetryCache
 from .models import AggregateSample
 from .store import RuntimeStore
 
@@ -20,8 +21,14 @@ class OverlayComposer:
         safe_margin: int = 24,
         diagnostics: bool = False,
         max_age_seconds: float = 2.0,
+        cache: Optional[TelemetryCache] = None,
     ) -> None:
         self.store = store
+        self.cache = cache or TelemetryCache()
+        if cache is None and store is not None:
+            initial = store.latest_aggregate()
+            if initial is not None:
+                self.cache.publish(initial, source="aggregate-initial")
         self.camera_id = camera_id
         self.device_id = device_id
         self.unit_no = unit_no
@@ -31,10 +38,10 @@ class OverlayComposer:
         self.max_age_seconds = max_age_seconds
 
     def sample(self) -> Optional[AggregateSample]:
-        return self.store.latest_aggregate()
+        return self.cache.latest()
 
-    def lines(self, clock_source: str = "media_pts") -> Tuple[str, ...]:
-        sample = self.sample()
+    def lines(self, clock_source: str = "media_pts", frame_ref: Optional[FrameRef] = None) -> Tuple[str, ...]:
+        sample = self.cache.select(frame_ref, self.max_age_seconds) if frame_ref is not None else self.sample()
         if sample is not None:
             age_seconds = (datetime.now(timezone.utc) - sample.timestamp_utc).total_seconds()
             if age_seconds < 0 or age_seconds > self.max_age_seconds:
@@ -56,9 +63,16 @@ class OverlayComposer:
             ai_line = "AI CABIN: UNAVAILABLE/DELAYED"
         return (*base, ai_line) if self.diagnostics else (*base, ai_line)
 
-    def add_display_meta(self, pyds: Any, batch_meta: Any, frame_meta: Any) -> None:
+    def add_display_meta(
+        self,
+        pyds: Any,
+        batch_meta: Any,
+        frame_meta: Any,
+        frame_ref: Optional[FrameRef] = None,
+    ) -> None:
         display_meta = pyds.nvds_acquire_display_meta_from_pool(batch_meta)
-        lines = self.lines()
+        source = frame_ref.timestamp_source if frame_ref is not None else "unknown"
+        lines = self.lines(clock_source=source, frame_ref=frame_ref)
         display_meta.num_labels = min(len(lines), 16)
         for index, line in enumerate(lines[: display_meta.num_labels]):
             text_params = display_meta.text_params[index]
@@ -71,6 +85,12 @@ class OverlayComposer:
             text_params.set_bg_clr = 1
             text_params.text_bg_clr.set(0.0, 0.0, 0.0, 0.65)
         pyds.nvds_add_display_meta_to_frame(frame_meta, display_meta)
+
+    def start(self, reader: Any, interval_seconds: float = 0.25) -> None:
+        self.cache.start(reader, interval_seconds)
+
+    def stop(self) -> None:
+        self.cache.stop()
 
 
 def identity_values(path: Path) -> Tuple[str, str]:

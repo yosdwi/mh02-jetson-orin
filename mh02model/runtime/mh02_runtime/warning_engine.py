@@ -34,6 +34,7 @@ def candidates_for(
                 source_kind=observation.source_kind,
                 frame_id=observation.frame_id,
                 media_pts_ns=observation.media_pts_ns,
+                frame_ref=observation.frame_ref,
                 object_class=observation.object_class,
                 confidence=observation.confidence,
                 track_id=observation.track_id,

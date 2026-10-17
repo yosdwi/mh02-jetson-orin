@@ -9,15 +9,16 @@ import sys
 import threading
 import time
 import uuid
-from collections import OrderedDict
+from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
 from queue import Full, Queue
 from threading import Event
-from typing import Dict, Optional, Tuple
+from typing import Deque, Dict, Optional, Tuple
 
 from .configuration import CabinAnnotationConfig, ConfigStore
 from .diagnostics import configure_logging
+from .frame_sync import FrameIdentityManager, FrameRef, FrameResultJoiner, TelemetryCache
 from .inference_contracts import BoundingBox, FatigueObservation, InferenceHealth
 from .overlay_composer import OverlayComposer, identity_values
 from .store import RuntimeStore
@@ -45,25 +46,28 @@ class ArtifactWriter:
 
 class ObservationBuffer:
     def __init__(self, limit: int = 64) -> None:
-        self.values: "OrderedDict[int, FatigueObservation]" = OrderedDict()
+        self.values: Dict[Tuple[str, str, int], FatigueObservation] = {}
+        self.legacy_values: Dict[int, FatigueObservation] = {}
         self.lock = threading.Lock()
         self.limit = limit
 
     def put(self, observation: FatigueObservation) -> None:
         with self.lock:
-            self.values[observation.media_pts_ns or 0] = observation
-            while len(self.values) > self.limit:
-                self.values.popitem(last=False)
+            if observation.frame_ref is not None:
+                self.values[observation.frame_ref.key] = observation
+            elif observation.media_pts_ns is not None:
+                self.legacy_values[observation.media_pts_ns] = observation
+            while len(self.values) + len(self.legacy_values) > self.limit:
+                if self.values:
+                    self.values.pop(next(iter(self.values)))
+                elif self.legacy_values:
+                    self.legacy_values.pop(next(iter(self.legacy_values)))
 
     def match(self, pts_ns: Optional[int], max_age_ns: int) -> Optional[FatigueObservation]:
         if pts_ns is None:
             return None
         with self.lock:
-            candidates = [(abs(key - pts_ns), value) for key, value in self.values.items() if key <= pts_ns]
-            if not candidates:
-                return None
-            distance, observation = min(candidates, key=lambda item: item[0])
-            return observation if distance <= max_age_ns else None
+            return self.legacy_values.get(pts_ns)
 
 
 def utc_now() -> datetime:
@@ -145,12 +149,17 @@ def run(config: CabinAnnotationConfig, identity_path: Path, stop: Event) -> int:
         config.osd_safe_margin,
         config.diagnostics,
         config.telemetry_max_age_seconds,
+        cache=TelemetryCache(),
     )
+    composer.start(store.latest_aggregate)
     detector = FaceLandmarkDetector(mp, config.face_config)
     frames = 0
     observations = 0
-    sample_queue: "Queue[Tuple[int, object]]" = Queue(maxsize=2)
-    matched = ObservationBuffer()
+    sample_queue: "Queue[Tuple[FrameRef, object]]" = Queue(maxsize=2)
+    joiner = FrameResultJoiner(limit=64)
+    identity = FrameIdentityManager("cabin")
+    sample_frame_refs: Dict[int, Deque[FrameRef]] = {}
+    osd_frame_refs: Dict[int, Deque[FrameRef]] = {}
     stream_generation = uuid.uuid4().hex
 
     def on_sample(appsink):
@@ -167,9 +176,14 @@ def run(config: CabinAnnotationConfig, identity_path: Path, stop: Event) -> int:
         try:
             frame = np.frombuffer(mapped.data, dtype=np.uint8).reshape((height, width, 3)).copy()
             pts_ns = None if buffer.pts == Gst.CLOCK_TIME_NONE else int(buffer.pts)
-            if pts_ns is not None:
+            frame_ref = None
+            if pts_ns is not None and sample_frame_refs.get(pts_ns):
+                frame_ref = sample_frame_refs[pts_ns].popleft()
+                if not sample_frame_refs[pts_ns]:
+                    del sample_frame_refs[pts_ns]
+            if frame_ref is not None:
                 try:
-                    sample_queue.put_nowait((pts_ns, frame))
+                    sample_queue.put_nowait((frame_ref, frame))
                 except Full:
                     pass
         finally:
@@ -181,7 +195,7 @@ def run(config: CabinAnnotationConfig, identity_path: Path, stop: Event) -> int:
         next_sample_at = 0.0
         while not stop.is_set():
             try:
-                pts_ns, frame = sample_queue.get(timeout=0.2)
+                frame_ref, frame = sample_queue.get(timeout=0.2)
             except Exception:
                 continue
             now = time.monotonic()
@@ -204,9 +218,10 @@ def run(config: CabinAnnotationConfig, identity_path: Path, stop: Event) -> int:
             observation = FatigueObservation(
                 observation_id=f"cabin-{uuid.uuid4().hex}",
                 observed_at_utc=utc_now(),
-                frame_id=f"cabin-{pts_ns}",
+                frame_id=f"cabin-{frame_ref.frame_seq}",
                 stream_generation=stream_generation,
-                media_pts_ns=pts_ns,
+                frame_ref=frame_ref,
+                media_pts_ns=frame_ref.media_pts_ns,
                 face_present=result.face is not None,
                 face_box=face_box,
                 closed_eyes=result.isclosedeye,
@@ -214,14 +229,38 @@ def run(config: CabinAnnotationConfig, identity_path: Path, stop: Event) -> int:
                 ear=ear,
                 mar=result.mar if result.mar >= 0 else None,
                 latency_ms=max(0.0, (time.monotonic_ns() - started) / 1_000_000),
+                observation_type="EXACT_INFERRED",
             )
-            matched.put(observation)
+            joiner.register_inference(frame_ref, observation)
             writer.event(observation)
             observations += 1
 
     sink.connect("new-sample", on_sample)
     worker = threading.Thread(target=process_samples, name="mh02-cabin-mediapipe", daemon=True)
     worker.start()
+
+    def on_mux(_pad, info):
+        buffer = info.get_buffer()
+        if buffer is None:
+            return Gst.PadProbeReturn.OK
+        pts_ns = None if buffer.pts == Gst.CLOCK_TIME_NONE else int(buffer.pts)
+        previous_epoch = identity.stream_epoch
+        frame_ref = identity.register(
+            pts_ns,
+            capture_utc=utc_now(),
+            capture_monotonic_ns=time.monotonic_ns(),
+            timestamp_source="ingest_estimate",
+            utc_uncertainty_ms=100.0,
+        )
+        if frame_ref.stream_epoch != previous_epoch:
+            joiner.invalidate_epoch(frame_ref.stream_epoch)
+            sample_frame_refs.clear()
+            osd_frame_refs.clear()
+        if pts_ns is not None:
+            sample_frame_refs.setdefault(pts_ns, deque()).append(frame_ref)
+            osd_frame_refs.setdefault(pts_ns, deque()).append(frame_ref)
+        joiner.register_video(frame_ref, time.monotonic_ns() + config.max_sync_age_ms * 1_000_000)
+        return Gst.PadProbeReturn.OK
 
     def on_osd(_pad, info):
         nonlocal frames
@@ -239,8 +278,14 @@ def run(config: CabinAnnotationConfig, identity_path: Path, stop: Event) -> int:
                 break
             frames += 1
             pts_ns = int(frame_meta.buf_pts) if frame_meta.buf_pts != Gst.CLOCK_TIME_NONE else None
-            observation = matched.match(pts_ns, config.max_sync_age_ms * 1_000_000)
-            composer.add_display_meta(pyds, batch_meta, frame_meta)
+            frame_ref = None
+            if pts_ns is not None and osd_frame_refs.get(pts_ns):
+                frame_ref = osd_frame_refs[pts_ns].popleft()
+                if not osd_frame_refs[pts_ns]:
+                    del osd_frame_refs[pts_ns]
+            joiner.expire()
+            observation = joiner.release(frame_ref) if frame_ref is not None else None
+            composer.add_display_meta(pyds, batch_meta, frame_meta, frame_ref)
             display_meta = pyds.nvds_acquire_display_meta_from_pool(batch_meta)
             display_meta.num_labels = 1
             display_meta.num_rects = 0
@@ -269,6 +314,7 @@ def run(config: CabinAnnotationConfig, identity_path: Path, stop: Event) -> int:
             frame_list = frame_list.next
         return Gst.PadProbeReturn.OK
 
+    mux.get_static_pad("src").add_probe(Gst.PadProbeType.BUFFER, on_mux)
     osd.get_static_pad("sink").add_probe(Gst.PadProbeType.BUFFER, on_osd)
     pipeline.set_state(Gst.State.PLAYING)
     writer.health(health(config, "running", 0, 0, ["DeepStream cabin annotated pipeline is running"]))
@@ -287,6 +333,7 @@ def run(config: CabinAnnotationConfig, identity_path: Path, stop: Event) -> int:
         stop.set()
         pipeline.set_state(Gst.State.NULL)
         worker.join(timeout=2)
+        composer.stop()
         writer.health(health(config, "stopped", frames, observations, ["cabin annotation pipeline stopped"]))
     return 0
 

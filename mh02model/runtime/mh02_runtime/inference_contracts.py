@@ -5,6 +5,8 @@ from typing import List, Literal, Optional, Tuple
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from .frame_sync import FrameRef
+
 
 SourceKind = Literal["live_rtsp", "replay_mp4"]
 InferenceStatus = Literal["starting", "running", "stopped", "blocked", "error", "not_running"]
@@ -37,6 +39,7 @@ class DetectionObservation(BaseModel):
     source_kind: SourceKind
     frame_id: str
     stream_generation: str = "legacy"
+    frame_ref: Optional[FrameRef] = None
     media_pts_ns: Optional[int] = Field(default=None, ge=0)
     object_class: str = Field(min_length=1)
     confidence: float = Field(ge=0, le=1)
@@ -89,6 +92,7 @@ class InferenceHealth(BaseModel):
     diagnostics: List[str] = Field(default_factory=list)
     annotated_stream_enabled: bool = False
     annotated_publisher: str = "disabled"
+    unmatched_latency_frames: int = Field(default=0, ge=0)
 
 
 class InferenceCapabilities(BaseModel):
@@ -128,6 +132,7 @@ class FatigueObservation(BaseModel):
     camera_id: Literal["cabin"] = "cabin"
     frame_id: str
     stream_generation: str = "legacy"
+    frame_ref: Optional[FrameRef] = None
     media_pts_ns: Optional[int] = Field(default=None, ge=0)
     face_present: bool = False
     face_box: Optional[BoundingBox] = None
@@ -136,4 +141,12 @@ class FatigueObservation(BaseModel):
     ear: Optional[float] = None
     mar: Optional[float] = None
     sync_status: Literal["matched", "delayed", "unavailable"] = "matched"
+    observation_type: Literal[
+        "EXACT_INFERRED",
+        "TRACKED",
+        "LAST_OBSERVED",
+        "NOT_EVALUATED",
+        "DELAYED",
+        "UNAVAILABLE",
+    ] = "EXACT_INFERRED"
     latency_ms: Optional[float] = Field(default=None, ge=0)

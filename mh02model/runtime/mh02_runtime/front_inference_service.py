@@ -11,15 +11,18 @@ import subprocess
 import tempfile
 import time
 import uuid
+from collections import deque
+from queue import Empty, Full, Queue
 from datetime import datetime, timezone
 from pathlib import Path
-from threading import Event
-from typing import Dict, List, Optional, Type, Union
+from threading import Event, Thread
+from typing import Deque, Dict, List, Optional, Type, Union
 
 from pydantic import BaseModel, ValidationError
 
 from .configuration import ConfigStore, InferenceConfig
 from .diagnostics import configure_logging
+from .frame_sync import FrameIdentityManager, FrameRef, TelemetryCache
 from .inference_contracts import BoundingBox, DetectionObservation, FrontValidationReport, InferenceCapabilities, InferenceHealth
 from .overlay_composer import OverlayComposer, identity_values
 from .store import RuntimeStore
@@ -179,11 +182,29 @@ class OutputWriter:
         self.health_path = health_path
         self.output_path.parent.mkdir(parents=True, exist_ok=True)
         self.health_path.parent.mkdir(parents=True, exist_ok=True)
+        self.queue: "Queue[str]" = Queue(maxsize=256)
+        self.stop = Event()
+        self.dropped_events = 0
+        self.worker = Thread(target=self._run, name="mh02-front-artifact-writer", daemon=True)
+        self.worker.start()
+
+    def _run(self) -> None:
+        while not self.stop.is_set() or not self.queue.empty():
+            try:
+                serialized = self.queue.get(timeout=0.1)
+            except Empty:
+                continue
+            try:
+                with self.output_path.open("a", encoding="utf-8") as handle:
+                    handle.write(serialized + "\n")
+            finally:
+                self.queue.task_done()
 
     def event(self, payload: Union[DetectionObservation, WarningCandidate]) -> None:
-        serialized = payload.model_dump_json()
-        with self.output_path.open("a", encoding="utf-8") as handle:
-            handle.write(serialized + "\n")
+        try:
+            self.queue.put_nowait(payload.model_dump_json())
+        except Full:
+            self.dropped_events += 1
 
     def health(self, payload: InferenceHealth) -> None:
         fd, temporary = tempfile.mkstemp(prefix="mh02-inference-", suffix=".json", dir=self.health_path.parent)
@@ -195,6 +216,10 @@ class OutputWriter:
         finally:
             if os.path.exists(temporary):
                 os.unlink(temporary)
+
+    def close(self) -> None:
+        self.stop.set()
+        self.worker.join(timeout=2.0)
 
 
 def pipeline_description(config: InferenceConfig) -> str:
@@ -238,11 +263,15 @@ class InferenceRun:
         self.detections = 0
         self.dropped_frames = 0
         self.started_monotonic = time.monotonic()
-        self.received_pts: Dict[int, int] = {}
+        self.received_pts: Dict[int, Deque[int]] = {}
         self.latencies: List[float] = []
         self.last_media_pts_ns: Optional[int] = None
         self.last_health_write = 0.0
         self.stream_generation = uuid.uuid4().hex
+        self.identity = FrameIdentityManager("front")
+        self.tracker_frame_refs: Dict[int, Deque[FrameRef]] = {}
+        self.osd_frame_refs: Dict[int, Deque[FrameRef]] = {}
+        self.unmatched_latency_frames = 0
 
     def health(self, status: str, diagnostics: Optional[List[str]] = None) -> InferenceHealth:
         elapsed = max(0.001, time.monotonic() - self.started_monotonic)
@@ -268,6 +297,7 @@ class InferenceRun:
             diagnostics=diagnostics or [],
             annotated_stream_enabled=self.config.annotated_stream_enabled,
             annotated_publisher=self.config.annotated_rtsp_url if self.config.annotated_stream_enabled else "disabled",
+            unmatched_latency_frames=self.unmatched_latency_frames,
         )
 
     def write_health(self, status: str, diagnostics: Optional[List[str]] = None, force: bool = False) -> None:
@@ -276,18 +306,45 @@ class InferenceRun:
             self.writer.health(self.health(status, diagnostics))
             self.last_health_write = now
 
-    def record_frame(self, pts_ns: int) -> None:
+    def record_frame(self, pts_ns: Optional[int], frame_ref: Optional[FrameRef] = None) -> None:
         self.frames += 1
         self.last_media_pts_ns = pts_ns
-        self.received_pts[pts_ns] = time.monotonic_ns()
+        frame_ref = frame_ref or self.identity.register(pts_ns, timestamp_source="unknown")
+        if pts_ns is not None:
+            self.received_pts.setdefault(pts_ns, deque()).append(time.monotonic_ns())
+            self.tracker_frame_refs.setdefault(pts_ns, deque()).append(frame_ref)
+            self.osd_frame_refs.setdefault(pts_ns, deque()).append(frame_ref)
+            while sum(len(values) for values in self.tracker_frame_refs.values()) > 512:
+                oldest = next(iter(self.tracker_frame_refs))
+                self.tracker_frame_refs[oldest].popleft()
+                if not self.tracker_frame_refs[oldest]:
+                    del self.tracker_frame_refs[oldest]
+                    if oldest in self.received_pts:
+                        self.received_pts.pop(oldest, None)
+                    self.osd_frame_refs.pop(oldest, None)
         self.write_health("running")
 
+    def frame_ref_for(self, pts_ns: Optional[int], consumer: str) -> Optional[FrameRef]:
+        if pts_ns is None:
+            return None
+        values = self.tracker_frame_refs if consumer == "tracker" else self.osd_frame_refs
+        queue = values.get(pts_ns)
+        if not queue:
+            return None
+        result = queue.popleft()
+        if not queue:
+            del values[pts_ns]
+        return result
+
     def frame_latency_ms(self, pts_ns: Optional[int]) -> Optional[float]:
-        received = self.received_pts.pop(pts_ns, None) if pts_ns is not None else None
-        if received is None and self.received_pts:
-            _oldest_pts, received = next(iter(self.received_pts.items()))
-            del self.received_pts[_oldest_pts]
+        received = None
+        if pts_ns is not None and self.received_pts.get(pts_ns):
+            queue = self.received_pts[pts_ns]
+            received = queue.popleft()
+            if not queue:
+                del self.received_pts[pts_ns]
         if received is None:
+            self.unmatched_latency_frames += 1
             return None
         return max(0.0, (time.monotonic_ns() - received) / 1_000_000)
 
@@ -417,6 +474,7 @@ def run_pipeline(config: InferenceConfig, output_path: Path, health_path: Path, 
     composer = None
     if config.annotated_stream_enabled:
         device_id, unit_no = identity_values(Path(config.identity_path))
+        telemetry_cache = TelemetryCache()
         composer = OverlayComposer(
             RuntimeStore(Path(config.telemetry_database_path)),
             "front",
@@ -426,12 +484,22 @@ def run_pipeline(config: InferenceConfig, output_path: Path, health_path: Path, 
             config.osd_safe_margin,
             config.osd_diagnostics,
             config.telemetry_max_age_seconds,
+            cache=telemetry_cache,
         )
+        composer.start(composer.store.latest_aggregate)
 
     def on_mux(_pad, info):
         buffer = info.get_buffer()
-        if buffer is not None and buffer.pts != Gst.CLOCK_TIME_NONE:
-            run.record_frame(int(buffer.pts))
+        if buffer is not None:
+            pts_ns = None if buffer.pts == Gst.CLOCK_TIME_NONE else int(buffer.pts)
+            frame_ref = run.identity.register(
+                pts_ns,
+                capture_utc=utc_now(),
+                capture_monotonic_ns=time.monotonic_ns(),
+                timestamp_source="ingest_estimate",
+                utc_uncertainty_ms=100.0,
+            )
+            run.record_frame(pts_ns, frame_ref)
         return Gst.PadProbeReturn.OK
 
     def on_tracker(_pad, info):
@@ -452,6 +520,7 @@ def run_pipeline(config: InferenceConfig, output_path: Path, health_path: Path, 
             pts_ns = int(frame_meta.buf_pts) if frame_meta.buf_pts != Gst.CLOCK_TIME_NONE else None
             object_list = frame_meta.obj_meta_list
             frame_latency_ms = run.frame_latency_ms(pts_ns)
+            frame_ref = run.frame_ref_for(pts_ns, "tracker")
             while object_list is not None:
                 try:
                     object_meta = pyds.NvDsObjectMeta.cast(object_list.data)
@@ -470,6 +539,7 @@ def run_pipeline(config: InferenceConfig, output_path: Path, health_path: Path, 
                     source_kind=config.source_kind,
                     frame_id=f"front-{int(frame_meta.frame_num)}",
                     stream_generation=run.stream_generation,
+                    frame_ref=frame_ref,
                     media_pts_ns=pts_ns,
                     object_class=str(object_meta.obj_label),
                     confidence=float(object_meta.confidence),
@@ -501,7 +571,8 @@ def run_pipeline(config: InferenceConfig, output_path: Path, health_path: Path, 
                     frame_meta = pyds.NvDsFrameMeta.cast(frame_list.data)
                 except StopIteration:
                     break
-                composer.add_display_meta(pyds, batch_meta, frame_meta)
+                pts_ns = int(frame_meta.buf_pts) if frame_meta.buf_pts != Gst.CLOCK_TIME_NONE else None
+                composer.add_display_meta(pyds, batch_meta, frame_meta, run.frame_ref_for(pts_ns, "osd"))
                 frame_list = frame_list.next
             return Gst.PadProbeReturn.OK
 
@@ -520,6 +591,9 @@ def run_pipeline(config: InferenceConfig, output_path: Path, health_path: Path, 
             return 5
     finally:
         pipeline.set_state(Gst.State.NULL)
+        if composer is not None:
+            composer.stop()
+        writer.close()
         run.write_health("stopped", ["inference pipeline stopped"], force=True)
     return 0
 
