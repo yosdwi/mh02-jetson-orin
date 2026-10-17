@@ -1,14 +1,14 @@
 [Unit]
 Description=MH02 fatigue detector
-After=mh02-vlog.service
-Requires=mh02-vlog.service
+After=mh02-mediamtx.service
+Requires=mh02-mediamtx.service
 
 [Service]
 User=smartd
 SupplementaryGroups=video
 WorkingDirectory=/home/smartd/mh02_runtime
 Environment=PYTHONPATH=/home/smartd/mh02_runtime
-ExecStart=/home/smartd/mh02_runtime/.venv/bin/python -m mh02_runtime.fatigue_service --source http://127.0.0.1:8080/live/front.m3u8 --app-root /home/smartd/mh02_runtime/legacy_mh02
+ExecStart=/home/smartd/mh02_runtime/.venv/bin/python -m mh02_runtime.fatigue_service --camera-id cabin --source http://127.0.0.1:8080/live/cabin.m3u8 --app-root /home/smartd/mh02_runtime/legacy_mh02
 Restart=always
 RestartSec=5
 

@@ -70,9 +70,9 @@ def run(args: argparse.Namespace, stop: Event) -> None:
             monotonic_ns=monotonic_ns,
             device_id=str(payload.get("deviceid", device_id)),
             unit_no=str(payload.get("unitno", unit_no)),
-            gps=store.latest_gps(),
+            gps=store.latest_gps(args.gps_max_age_seconds, sample_time),
             redis_payload=payload,
-            fatigue=store.latest_fatigue(),
+            fatigue=store.latest_fatigue(args.fatigue_max_age_seconds, sample_time),
         )
         store.save_aggregate(sample)
         stop.wait(args.interval)
@@ -85,6 +85,8 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--redis-url", default="redis://127.0.0.1:6379/0")
     result.add_argument("--redis-key", default="ROW_DATA:data")
     result.add_argument("--interval", type=float, default=1.0)
+    result.add_argument("--gps-max-age-seconds", type=float, default=5.0)
+    result.add_argument("--fatigue-max-age-seconds", type=float, default=2.0)
     return result
 
 

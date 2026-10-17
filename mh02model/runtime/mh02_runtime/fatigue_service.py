@@ -11,7 +11,6 @@ from threading import Event
 from typing import Tuple
 
 import cv2
-import mediapipe as mp
 
 from .models import FatigueState
 from .store import RuntimeStore
@@ -28,6 +27,10 @@ def parse_roi(value: str) -> Tuple[int, int, int, int]:
 
 
 def run(args: argparse.Namespace, stop: Event) -> None:
+    if args.camera_id != "cabin" or "/front" in args.source:
+        raise ValueError("Fatigue inference requires the explicit cabin camera source")
+    import mediapipe as mp
+
     store = RuntimeStore(Path(args.database))
     sys.path.insert(0, str(Path(args.app_root)))
     from detectors.FaceLandmarkDetector import FaceLandmarkDetector
@@ -36,6 +39,7 @@ def run(args: argparse.Namespace, stop: Event) -> None:
     capture = cv2.VideoCapture(args.source)
     capture.set(cv2.CAP_PROP_BUFFERSIZE, 2)
     next_sample = time.monotonic()
+    frame_sequence = 0
     roi = parse_roi(args.roi)
     while not stop.is_set():
         ok, frame = capture.read()
@@ -52,6 +56,7 @@ def run(args: argparse.Namespace, stop: Event) -> None:
         height, width = frame.shape[:2]
         rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         result = detector.detect(rgb_frame, (height, width), roi)
+        frame_sequence += 1
         ear = None
         if result.ear[0] >= 0 and result.ear[1] >= 0:
             ear = (result.ear[0] + result.ear[1]) / 2
@@ -63,14 +68,18 @@ def run(args: argparse.Namespace, stop: Event) -> None:
             yawning=result.isyawning,
             ear=ear,
             mar=result.mar if result.mar >= 0 else None,
+            camera_id=args.camera_id,
+            frame_id=str(frame_sequence),
         )
         store.save_fatigue(state)
+    capture.release()
 
 
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(description="MH02 closed-eyes and yawning service")
     result.add_argument("--database", default="/var/lib/mh02/state/mh02.sqlite3")
-    result.add_argument("--source", default="http://127.0.0.1:8080/live/front.m3u8")
+    result.add_argument("--camera-id", default="cabin")
+    result.add_argument("--source", default="http://127.0.0.1:8080/live/cabin.m3u8")
     result.add_argument("--app-root", default=str(Path(__file__).resolve().parents[3] / "apps" / "mh02"))
     result.add_argument("--interval", type=float, default=0.25)
     result.add_argument("--roi", default="300,100,1200,700")
