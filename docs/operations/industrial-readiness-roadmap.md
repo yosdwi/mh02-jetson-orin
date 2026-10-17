@@ -17,7 +17,7 @@ This checkpoint is not a claim that Milestone B is complete. It becomes evidence
 
 ## P0 frame synchronization checkpoint — 2026-10-18
 
-Commits `b3810d5`, `558e294`, `59d8a60`, and `211e01e` add the versioned `FrameRef` contract, stream-epoch/frame-sequence identity manager, exact Cabin `FrameResultJoiner`, branch-local duplicate-PTS handling, Front `NvDsFrameMeta.frame_num` timing correlation, bounded asynchronous Front artifact persistence, and a background telemetry cache. OSD callbacks no longer call `RuntimeStore.latest_aggregate()`. Unmatched Front PTS values are reported as unknown latency; an unrelated pending frame is never consumed as a fallback.
+Commits `b3810d5`, `558e294`, `59d8a60`, `211e01e`, and `ac277fc` add the versioned `FrameRef` contract, stream-epoch/frame-sequence identity manager, exact Cabin `FrameResultJoiner`, branch-local duplicate-PTS handling, Front `NvDsFrameMeta.frame_num` timing correlation, bounded asynchronous Front artifact persistence, a background telemetry cache, and explicit p50/p95/p99 inference health fields. OSD callbacks no longer call `RuntimeStore.latest_aggregate()`. Unmatched Front PTS values are reported as unknown latency; an unrelated pending frame is never consumed as a fallback.
 
 Automated validation: `PYTHONPATH=mh02model/runtime pytest -q` passed 41 tests, with coverage for out-of-order and late inference, camera/epoch contamination, duplicate/missing/discontinuous PTS, future/stale telemetry, and Front frame-number latency correlation. Python compileall and `git diff --check` also passed.
 
