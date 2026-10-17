@@ -24,6 +24,14 @@
 5. [`docs/operations/release-gates.md`](docs/operations/release-gates.md) — go/no-go criteria.
 6. [`.agents/skills/`](.agents/skills/) — task-specific agent workflows.
 
+## Industrial productization plan (proposed)
+
+- [Industrial architecture ADR](docs/architecture/adr/0001-industrial-product-foundation.md) — permitted rework, capture ownership, data/evidence integrity and safety boundaries.
+- [Competitive reference study](docs/research/competitive-reference-study.md) — Blaxtair, Hexagon, Netradyne, Cat and NVIDIA comparisons; KEEP/ADOPT/ADAPT/RESEARCH matrix.
+- [Industrial readiness roadmap](docs/operations/industrial-readiness-roadmap.md) — milestone order, acceptance evidence, ownership and first regression-test batch.
+
+Documentation records decisions and evaluation criteria; **it does not mean deployment, GPU acceleration, model quality or safety certification has been demonstrated.**
+
 ## Safety / publication notes
 
 The source archive included RTSP credentials and local deployment identifiers. These were **not** published. Device/environment configuration was converted to `.example` templates; a legacy RTSP probe was switched to environment-based config. Windows EXE/DLL/WAV artifacts, generated Python cache and transient logs were excluded. See [`docs/operations/import-manifest.md`](docs/operations/import-manifest.md).
